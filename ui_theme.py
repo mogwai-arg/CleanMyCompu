@@ -59,6 +59,8 @@ class Colors:
     TEXT_DARK = "#F5F5F7"
     TEXT_SEC_LIGHT = "#6E6E73"
     TEXT_SEC_DARK = "#98989D"
+    # Alias — texto subtle/secundario que se ve bien en ambos modos
+    TEXT_SUBTLE = "#6E6E73"
 
     # 10% — acento (azul macOS)
     ACCENT_LIGHT = "#0071E3"
