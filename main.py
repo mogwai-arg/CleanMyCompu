@@ -40,6 +40,7 @@ import performance
 import disk_analyzer
 import app_analyzer
 import windows_deep_clean
+import user_scan
 from confetti import Confetti
 from notifications import notify
 from platform_helpers import is_windows, is_mac, list_all_disks
@@ -139,6 +140,9 @@ SECTIONS = [
     {"key": "Limpieza Windows", "icon": "sparkles", "menu_group": "HERRAMIENTAS",
      "desc": "Cachés y archivos de sistema de Windows que suelen ocupar decenas de GB. Requiere permisos de administrador (una ventana UAC).",
      "platform": "win"},
+    {"key": "Escaneo de Users", "icon": "hard-drive", "menu_group": "HERRAMIENTAS",
+     "desc": "Papelera, instaladores viejos, backups de iPhone, crash dumps, Windows.old y screenshots antiguos — los grandes ocultos en tu carpeta de usuario.",
+     "platform": "win"},
     {"key": "Actualizador", "icon": "download", "menu_group": "HERRAMIENTAS",
      "desc": "Verifica y actualiza apps y paquetes instalados via Homebrew.",
      "platform": "darwin"},
@@ -205,6 +209,13 @@ ONBOARDING = {
         "Archivos grandes olvidados",
         "Muestra archivos de +100 MB que no abrís hace 6+ meses. Los checkboxes vienen sin marcar "
         "porque acá tenés que revisar uno por uno: puede haber cosas importantes.",
+    ),
+    "Escaneo de Users": (
+        "Los grandes ocultos en tu carpeta de usuario",
+        "Escaneo tu carpeta Users buscando: papelera de reciclaje (todas las unidades), "
+        "instaladores viejos en Descargas, backups de iPhone/iPad, Windows.old, crash "
+        "dumps y screenshots antiguos. Cada uno tiene su botón para revisar o borrar directo. "
+        "Algunas ops necesitan permisos de admin (una ventana UAC).",
     ),
     "Limpieza Windows": (
         "Espacio grande escondido en Windows",
@@ -875,6 +886,74 @@ class LargeFileRow(QFrame):
 
     def is_selected(self) -> bool:
         return self.checkbox.isChecked()
+
+
+class UserScanCard(QFrame):
+    """
+    Card para un hallazgo del escaneo de Users (papelera, instaladores, iPhone, etc).
+    Icono + título + subtítulo + tamaño + botón de acción.
+    """
+    action_clicked = Signal(str)  # category key
+
+    def __init__(self, category: str, icon: str, title: str, subtitle: str,
+                 size_bytes: int, action_label: str, action_enabled: bool = True,
+                 destructive: bool = True):
+        super().__init__()
+        self.setObjectName("category-row")
+        self.category = category
+        self.size_bytes = size_bytes
+
+        h = QHBoxLayout(self)
+        h.setContentsMargins(Spacing.LG, Spacing.MD, Spacing.LG, Spacing.MD)
+        h.setSpacing(Spacing.LG)
+
+        icon_lbl = QLabel()
+        icon_lbl.setPixmap(make_icon_pixmap(icon, size=22, color=icon_color()))
+        icon_lbl.setFixedSize(28, 28)
+        h.addWidget(icon_lbl)
+
+        col = QVBoxLayout()
+        col.setSpacing(2)
+        name = QLabel(title)
+        name.setObjectName("row-name")
+        desc = QLabel(subtitle)
+        desc.setObjectName("row-desc")
+        desc.setWordWrap(True)
+        col.addWidget(name)
+        col.addWidget(desc)
+        h.addLayout(col, stretch=1)
+
+        size_txt = human_bytes(size_bytes) if size_bytes > 0 else "—"
+        size_lbl = QLabel(size_txt)
+        size_lbl.setStyleSheet(
+            f"font-size: {Type.LG}px; font-weight: 700; "
+            f"color: {Colors.DANGER_LIGHT if size_bytes > 0 else Colors.TEXT_SUBTLE};"
+            f" background: transparent;")
+        size_lbl.setMinimumWidth(90)
+        size_lbl.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        h.addWidget(size_lbl)
+
+        btn = QPushButton(action_label)
+        btn.setProperty("role", "destructive" if destructive else "primary")
+        btn.setEnabled(action_enabled and size_bytes > 0)
+        btn.clicked.connect(lambda: self.action_clicked.emit(category))
+        h.addWidget(btn)
+
+        self.setMinimumHeight(72)
+
+
+class UserScanWorker(QObject):
+    """Corre user_scan.scan_all() en background."""
+    progress = Signal(str)
+    finished = Signal(object)
+
+    def run(self):
+        try:
+            result = user_scan.scan_all(on_progress=lambda m: self.progress.emit(m))
+        except Exception as e:
+            self.progress.emit(f"Error: {e}")
+            result = {}
+        self.finished.emit(result)
 
 
 class WindowsCleanRow(QFrame):
@@ -1713,6 +1792,7 @@ class MainWindow(QMainWindow):
         self.page_disk = self._build_disk_analyzer_page()
         self.page_smart = self._build_smart_app_page()
         self.page_windows_clean = self._build_windows_clean_page()
+        self.page_user_scan = self._build_user_scan_page()
         self.perf_rows = []  # inicializar
         self.stack.addWidget(self.page_dashboard)     # 0
         self.stack.addWidget(self.page_categories)    # 1
@@ -1728,6 +1808,7 @@ class MainWindow(QMainWindow):
         self.stack.addWidget(self.page_disk)          # 11
         self.stack.addWidget(self.page_smart)         # 12
         self.stack.addWidget(self.page_windows_clean) # 13
+        self.stack.addWidget(self.page_user_scan)     # 14
         v.addWidget(self.stack, stretch=1)
 
         # Footer
@@ -2144,6 +2225,364 @@ class MainWindow(QMainWindow):
                             "probá una operación por vez.",
                 icon_name="alert-triangle", icon_color=Colors.WARNING, parent=self,
             ).exec()
+
+    def _build_user_scan_page(self) -> QWidget:
+        page = QScrollArea()
+        page.setObjectName("detail-scroll")
+        page.setWidgetResizable(True)
+        page.setFrameShape(QFrame.NoFrame)
+        content = QWidget()
+        self.userscan_layout = QVBoxLayout(content)
+        self.userscan_layout.setContentsMargins(Spacing.XXL, 0, Spacing.XXL, Spacing.XL)
+        self.userscan_layout.setSpacing(Spacing.SM)
+
+        self.userscan_progress = ProgressBanner(cancellable=False)
+        self.userscan_progress.setVisible(False)
+        self.userscan_layout.addWidget(self.userscan_progress)
+
+        self.userscan_empty = EmptyState(
+            icon_name="hard-drive",
+            title="Escaneo de tu carpeta Users",
+            body="Busco los 6 grandes ocultos que suelen ocupar decenas de GB: "
+                 "papelera de reciclaje, instaladores viejos en Descargas, backups de "
+                 "iPhone/iPad, Windows.old, crash dumps y screenshots antiguos.",
+            action_label="Escanear ahora",
+            action_callback=lambda: self.start_user_scan(),
+        )
+        self.userscan_layout.addWidget(self.userscan_empty)
+
+        # Total summary label (visible cuando hay resultados)
+        self.userscan_summary = QLabel("")
+        self.userscan_summary.setStyleSheet(
+            f"font-size: {Type.LG}px; font-weight: 700; "
+            f"color: {Colors.DANGER_LIGHT}; padding: {Spacing.SM}px 0;")
+        self.userscan_summary.setVisible(False)
+        self.userscan_layout.addWidget(self.userscan_summary)
+
+        self.userscan_layout.addStretch(1)
+        self.userscan_cards = []
+        self.userscan_data = {}
+        page.setWidget(content)
+        return page
+
+    def start_user_scan(self):
+        # Limpiar cards previas
+        for c in self.userscan_cards:
+            c.setParent(None)
+        self.userscan_cards = []
+        self.userscan_empty.setVisible(False)
+        self.userscan_summary.setVisible(False)
+
+        self.userscan_progress.set_title("Escaneando tu carpeta Users…")
+        self.userscan_progress.set_detail("Buscando papelera, instaladores viejos, backups…")
+        self.userscan_progress.setVisible(True)
+
+        self.thread = QThread()
+        self.worker = UserScanWorker()
+        self.worker.moveToThread(self.thread)
+        self.thread.started.connect(self.worker.run)
+        self.worker.progress.connect(lambda m: self.userscan_progress.set_detail(m))
+        self.worker.finished.connect(self._on_user_scan_done)
+        self.worker.finished.connect(self.thread.quit)
+        self.worker.finished.connect(self.worker.deleteLater)
+        self.thread.finished.connect(self.thread.deleteLater)
+        self.thread.start()
+
+    def _on_user_scan_done(self, data: dict):
+        self.userscan_progress.setVisible(False)
+        self.userscan_data = data
+
+        # Preparar cada card
+        cards_data = []
+
+        # 1. Papelera
+        rb = data.get("recycle_bin", {"size": 0, "items": 0})
+        if rb["size"] > 0:
+            cards_data.append({
+                "category": "recycle_bin",
+                "icon": "trash",
+                "title": "Papelera de reciclaje",
+                "subtitle": f"{rb['items']} archivos esperando ser eliminados definitivamente.",
+                "size": rb["size"],
+                "btn": "Vaciar papelera",
+            })
+
+        # 2. Instaladores viejos
+        installers = data.get("installers", [])
+        if installers:
+            total_i = sum(i["size"] for i in installers)
+            cards_data.append({
+                "category": "installers",
+                "icon": "download",
+                "title": "Instaladores viejos en Descargas",
+                "subtitle": f"{len(installers)} archivos (.exe/.msi/.iso/.zip) de más de "
+                            "30 días sin abrir. Ya instalaste el programa, no los necesitás.",
+                "size": total_i,
+                "btn": "Revisar y borrar",
+            })
+
+        # 3. iPhone backups
+        iphone = data.get("iphone_backups", [])
+        if iphone:
+            total_ip = sum(i["size"] for i in iphone)
+            cards_data.append({
+                "category": "iphone",
+                "icon": "hard-drive",
+                "title": f"Backups de iPhone/iPad ({len(iphone)})",
+                "subtitle": "Copias completas de tu dispositivo. Borrar la local NO afecta "
+                            "tu iPhone.",
+                "size": total_ip,
+                "btn": "Revisar backups",
+            })
+
+        # 4. Windows.old
+        win_old = data.get("windows_old")
+        if win_old:
+            cards_data.append({
+                "category": "windows_old",
+                "icon": "sparkles",
+                "title": "Windows.old (upgrade anterior)",
+                "subtitle": "Copia del Windows previo a un update. Solo sirve para revertir "
+                            "durante 10 días. Después es basura.",
+                "size": win_old["size"],
+                "btn": "Quitar (requiere admin)",
+            })
+
+        # 5. Crash dumps
+        dumps = data.get("crash_dumps", [])
+        if dumps:
+            total_d = sum(d["size"] for d in dumps)
+            cards_data.append({
+                "category": "crash_dumps",
+                "icon": "info",
+                "title": "Crash dumps y reportes de error",
+                "subtitle": f"{len(dumps)} carpetas con volcados de memoria y reportes WER. "
+                            "Sirven solo para debug.",
+                "size": total_d,
+                "btn": "Limpiar todo",
+            })
+
+        # 6. Screenshots antiguos
+        ss = data.get("screenshots", [])
+        if ss:
+            total_s = sum(s["size"] for s in ss)
+            cards_data.append({
+                "category": "screenshots",
+                "icon": "hard-drive",
+                "title": "Screenshots antiguos",
+                "subtitle": f"{len(ss)} capturas de pantalla de más de 90 días.",
+                "size": total_s,
+                "btn": "Revisar y borrar",
+            })
+
+        if not cards_data:
+            self.userscan_empty.set_body(
+                "Nada para limpiar acá. Papelera vacía, no hay instaladores viejos, "
+                "no hay backups de iPhone y tu Windows está limpio de upgrades previos.")
+            self.userscan_empty.setVisible(True)
+            return
+
+        # Insertar cards antes del stretch
+        total_all = sum(c["size"] for c in cards_data)
+        self.userscan_summary.setText(
+            f"{len(cards_data)} categorías encontradas · Total recuperable: ~{human_bytes(total_all)}"
+        )
+        self.userscan_summary.setVisible(True)
+
+        insert_at = self.userscan_layout.count() - 1
+        for c in cards_data:
+            card = UserScanCard(
+                category=c["category"],
+                icon=c["icon"],
+                title=c["title"],
+                subtitle=c["subtitle"],
+                size_bytes=c["size"],
+                action_label=c["btn"],
+            )
+            card.action_clicked.connect(self._on_user_scan_action)
+            self.userscan_layout.insertWidget(insert_at, card)
+            self.userscan_cards.append(card)
+            insert_at += 1
+
+        self.statusBar().showMessage(
+            f"Escaneo de Users: ~{human_bytes(total_all)} recuperables")
+
+    def _on_user_scan_action(self, category: str):
+        """Router para el botón de cada card."""
+        if category == "recycle_bin":
+            self._action_empty_recycle_bin()
+        elif category == "installers":
+            self._action_review_installers()
+        elif category == "iphone":
+            self._action_review_iphone()
+        elif category == "windows_old":
+            self._action_remove_windows_old()
+        elif category == "crash_dumps":
+            self._action_clean_crash_dumps()
+        elif category == "screenshots":
+            self._action_review_screenshots()
+
+    # --- Handlers individuales ---
+
+    def _action_empty_recycle_bin(self):
+        rb = self.userscan_data.get("recycle_bin", {"size": 0, "items": 0})
+        confirm = ConfirmDialog(
+            title="Vaciar papelera de reciclaje",
+            body=f"Se van a eliminar definitivamente {rb['items']} archivos "
+                 f"({human_bytes(rb['size'])}). Esta acción no se puede deshacer.",
+            confirm_label="Vaciar", parent=self,
+        )
+        if confirm.exec() != QDialog.Accepted:
+            return
+        freed = rb["size"]
+        ok = user_scan.empty_recycle_bin()
+        if ok:
+            stats.record("Papelera de reciclaje", freed)
+            self.storage_bar.refresh()
+            self._celebrate()
+        self.start_user_scan()
+
+    def _action_clean_crash_dumps(self):
+        dumps = self.userscan_data.get("crash_dumps", [])
+        total = sum(d["size"] for d in dumps)
+        items = [{"name": d["name"], "icon": "info", "bytes": d["size"]} for d in dumps]
+        dlg = ConfirmCleanDialog(items, total, parent=self)
+        dlg.setWindowTitle("Limpiar crash dumps y WER")
+        if dlg.exec() != QDialog.Accepted:
+            return
+        freed = 0
+        for d in dumps:
+            try:
+                import shutil as _sh
+                _sh.rmtree(d["path"], ignore_errors=True)
+                freed += d["size"]
+            except Exception:
+                pass
+        stats.record("Crash dumps", freed)
+        self.storage_bar.refresh()
+        self._celebrate()
+        self.start_user_scan()
+
+    def _action_remove_windows_old(self):
+        win_old = self.userscan_data.get("windows_old")
+        if not win_old:
+            return
+        confirm = ConfirmDialog(
+            title="Quitar Windows.old",
+            body=f"Vas a borrar {human_bytes(win_old['size'])} de la carpeta "
+                 "C:\\Windows.old. Esto es una copia del Windows previo a un update. "
+                 "Después de esto NO PODRÁS revertir al Windows anterior. Windows "
+                 "te va a pedir permisos de administrador (UAC).",
+            confirm_label="Quitar", parent=self,
+        )
+        if confirm.exec() != QDialog.Accepted:
+            return
+        # Necesita admin — usar takeown + rmdir via elevated PS
+        script = (
+            "takeown /F 'C:\\Windows.old' /R /D Y | Out-Null; "
+            "icacls 'C:\\Windows.old' /grant administrators:F /T /C | Out-Null; "
+            "Remove-Item -LiteralPath 'C:\\Windows.old' -Recurse -Force "
+            "-ErrorAction SilentlyContinue"
+        )
+        ok = windows_deep_clean._run_elevated_ps(script, timeout=1800)
+        if ok:
+            stats.record("Windows.old", win_old["size"])
+            self.storage_bar.refresh()
+            self._celebrate()
+        else:
+            InfoDialog(
+                title="No se pudo quitar",
+                body="Windows rechazó la operación o cancelaste el UAC. Podés intentar "
+                     "también desde 'Liberar espacio' en la config de Windows.",
+                icon_name="alert-triangle", icon_color=Colors.WARNING, parent=self,
+            ).exec()
+        self.start_user_scan()
+
+    def _action_review_installers(self):
+        """Muestra lista de instaladores en un ConfirmCleanDialog."""
+        installers = self.userscan_data.get("installers", [])
+        if not installers:
+            return
+        items = [{"name": Path(i["path"]).name, "icon": "download",
+                  "bytes": i["size"]} for i in installers]
+        total = sum(i["size"] for i in installers)
+        dlg = ConfirmCleanDialog(items, total, parent=self)
+        dlg.setWindowTitle("Borrar instaladores viejos")
+        if dlg.exec() != QDialog.Accepted:
+            return
+        freed = 0
+        for i in installers:
+            try:
+                from send2trash import send2trash
+                send2trash(str(i["path"]))
+                freed += i["size"]
+            except Exception:
+                try:
+                    Path(i["path"]).unlink()
+                    freed += i["size"]
+                except OSError:
+                    pass
+        stats.record("Instaladores viejos", freed)
+        self.storage_bar.refresh()
+        self._celebrate()
+        self.start_user_scan()
+
+    def _action_review_iphone(self):
+        """Backups de iPhone — muestra dispositivo + fecha en el dialog."""
+        backups = self.userscan_data.get("iphone_backups", [])
+        if not backups:
+            return
+        items = []
+        for b in backups:
+            name = b["device_name"] or b["uuid"][:12]
+            if b["mtime"]:
+                name += f" — {b['mtime'].strftime('%Y-%m-%d')}"
+            items.append({"name": name, "icon": "hard-drive", "bytes": b["size"]})
+        total = sum(b["size"] for b in backups)
+        dlg = ConfirmCleanDialog(items, total, parent=self)
+        dlg.setWindowTitle("Borrar backups de iPhone/iPad")
+        if dlg.exec() != QDialog.Accepted:
+            return
+        freed = 0
+        for b in backups:
+            try:
+                import shutil as _sh
+                _sh.rmtree(b["path"], ignore_errors=True)
+                freed += b["size"]
+            except Exception:
+                pass
+        stats.record("Backups iOS", freed)
+        self.storage_bar.refresh()
+        self._celebrate()
+        self.start_user_scan()
+
+    def _action_review_screenshots(self):
+        ss = self.userscan_data.get("screenshots", [])
+        if not ss:
+            return
+        items = [{"name": Path(s["path"]).name, "icon": "hard-drive",
+                  "bytes": s["size"]} for s in ss]
+        total = sum(s["size"] for s in ss)
+        dlg = ConfirmCleanDialog(items, total, parent=self)
+        dlg.setWindowTitle("Borrar screenshots antiguos")
+        if dlg.exec() != QDialog.Accepted:
+            return
+        freed = 0
+        for s in ss:
+            try:
+                from send2trash import send2trash
+                send2trash(str(s["path"]))
+                freed += s["size"]
+            except Exception:
+                try:
+                    Path(s["path"]).unlink()
+                    freed += s["size"]
+                except OSError:
+                    pass
+        stats.record("Screenshots viejos", freed)
+        self.storage_bar.refresh()
+        self._celebrate()
+        self.start_user_scan()
 
     def _build_disk_analyzer_page(self) -> QWidget:
         page = QScrollArea()
@@ -2759,6 +3198,13 @@ class MainWindow(QMainWindow):
             # Auto-cargar la primera vez
             if not getattr(self, "winclean_rows", []):
                 self.start_windows_clean_scan()
+        elif section == "Escaneo de Users":
+            self.stack.setCurrentIndex(14)
+            self.action_button.setVisible(True)
+            self.action_button.setText("Escanear Users")
+            self.footer.setVisible(False)
+            if not getattr(self, "userscan_cards", []):
+                self.start_user_scan()
         self._update_footer()
 
     def _apply_category_filter(self, group: str):
@@ -2815,6 +3261,8 @@ class MainWindow(QMainWindow):
             self.start_smart_scan()
         elif s == "Limpieza Windows":
             self.start_windows_clean_scan()
+        elif s == "Escaneo de Users":
+            self.start_user_scan()
 
     # ---- Escaneo de categorías ----
 

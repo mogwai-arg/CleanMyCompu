@@ -208,6 +208,206 @@ KNOWN_APPS = [
              "desc": "Media cache global de Adobe"},
         ],
     },
+    {
+        "name": "Adobe Premiere Pro",
+        "kind": "Editor de video",
+        "folder_names": ["Adobe/Common/Media Cache"],
+        "location": "roaming",
+        "cleanable": [
+            {"subpath": "**", "safety": "safe",
+             "desc": "Media cache de Premiere — se regenera al abrir proyectos"},
+        ],
+    },
+    {
+        "name": "Adobe After Effects",
+        "kind": "Editor de video",
+        "folder_names": ["Adobe/After Effects*"],
+        "location": "roaming",
+        "cleanable": [
+            {"subpath": "Disk Cache*", "safety": "safe",
+             "desc": "Disk cache — se regenera"},
+        ],
+    },
+    # ============= JUEGOS =============
+    {
+        "name": "Steam",
+        "kind": "Juegos",
+        "folder_names": ["Steam"],
+        "location": "local",
+        "cleanable": [
+            {"subpath": "htmlcache", "safety": "safe",
+             "desc": "Cache HTML del cliente Steam"},
+            {"subpath": "logs", "safety": "safe", "desc": "Logs"},
+            {"subpath": "dumps", "safety": "safe", "desc": "Crash dumps"},
+        ],
+    },
+    {
+        "name": "Epic Games Launcher",
+        "kind": "Juegos",
+        "folder_names": ["EpicGamesLauncher"],
+        "location": "local",
+        "cleanable": [
+            {"subpath": "Saved/Logs", "safety": "safe", "desc": "Logs"},
+            {"subpath": "Saved/webcache", "safety": "safe",
+             "desc": "Cache web del launcher"},
+            {"subpath": "Saved/webcache_*", "safety": "safe",
+             "desc": "Cache web versionado"},
+        ],
+    },
+    {
+        "name": "Battle.net",
+        "kind": "Juegos",
+        "folder_names": ["Battle.net"],
+        "location": "roaming",
+        "cleanable": [
+            {"subpath": "Cache", "safety": "safe", "desc": "Cache del launcher"},
+            {"subpath": "Logs", "safety": "safe", "desc": "Logs"},
+        ],
+    },
+    {
+        "name": "Riot Client",
+        "kind": "Juegos",
+        "folder_names": ["Riot Games"],
+        "location": "local",
+        "cleanable": [
+            {"subpath": "Riot Client/Data/logs", "safety": "safe", "desc": "Logs"},
+            {"subpath": "**/Cache", "safety": "safe", "desc": "Cache del cliente"},
+        ],
+    },
+    {
+        "name": "GOG Galaxy",
+        "kind": "Juegos",
+        "folder_names": ["GOG.com/Galaxy"],
+        "location": "local",
+        "cleanable": [
+            {"subpath": "logs", "safety": "safe", "desc": "Logs"},
+            {"subpath": "webcache", "safety": "safe", "desc": "Cache web"},
+        ],
+    },
+    {
+        "name": "EA App",
+        "kind": "Juegos",
+        "folder_names": ["Electronic Arts"],
+        "location": "local",
+        "cleanable": [
+            {"subpath": "**/Logs", "safety": "safe", "desc": "Logs"},
+            {"subpath": "**/Cache", "safety": "safe", "desc": "Cache"},
+        ],
+    },
+    {
+        "name": "NVIDIA GeForce Experience",
+        "kind": "Juegos",
+        "folder_names": ["NVIDIA Corporation"],
+        "location": "local",
+        "cleanable": [
+            {"subpath": "**/GLCache", "safety": "safe", "desc": "OpenGL shader cache"},
+            {"subpath": "NvBackend/DLCache", "safety": "safe", "desc": "Cache de descargas"},
+            {"subpath": "NvContainer/Logs", "safety": "safe", "desc": "Logs"},
+        ],
+    },
+    # ============= CHAT / MENSAJERÍA =============
+    {
+        "name": "WhatsApp Desktop",
+        "kind": "Comunicación",
+        "folder_names": ["WhatsApp"],
+        "location": "local",
+        "cleanable": [
+            {"subpath": "Cache", "safety": "safe", "desc": "Cache"},
+            {"subpath": "Code Cache", "safety": "safe", "desc": "Cache del motor"},
+            {"subpath": "GPUCache", "safety": "safe", "desc": "Cache GPU"},
+            {"subpath": "media", "safety": "caution",
+             "desc": "Media descargada (fotos/videos). Se re-descarga si abrís los chats."},
+        ],
+    },
+    {
+        "name": "Telegram Desktop",
+        "kind": "Comunicación",
+        "folder_names": ["Telegram Desktop"],
+        "location": "roaming",
+        "cleanable": [
+            {"subpath": "tdata/user_data/media_cache", "safety": "caution",
+             "desc": "Cache de media — se re-descarga cuando abrís los chats"},
+            {"subpath": "tdata/emoji", "safety": "safe", "desc": "Emojis cacheados"},
+        ],
+    },
+    {
+        "name": "Signal",
+        "kind": "Comunicación",
+        "folder_names": ["Signal"],
+        "location": "roaming",
+        "cleanable": [
+            {"subpath": "attachments.noindex", "safety": "caution",
+             "desc": "Attachments locales"},
+            {"subpath": "logs", "safety": "safe", "desc": "Logs"},
+        ],
+    },
+    # ============= PRODUCTIVIDAD / DISEÑO =============
+    {
+        "name": "Figma",
+        "kind": "Diseño",
+        "folder_names": ["Figma"],
+        "location": "roaming",
+        "cleanable": [
+            {"subpath": "Desktop/DesktopProfile/Cache", "safety": "safe",
+             "desc": "Cache del cliente"},
+            {"subpath": "**/GPUCache", "safety": "safe", "desc": "Cache GPU"},
+        ],
+    },
+    {
+        "name": "Notion",
+        "kind": "Productividad",
+        "folder_names": ["Notion"],
+        "location": "roaming",
+        "cleanable": [
+            {"subpath": "Cache", "safety": "safe", "desc": "Cache"},
+            {"subpath": "Code Cache", "safety": "safe", "desc": "Cache del motor"},
+            {"subpath": "GPUCache", "safety": "safe", "desc": "Cache GPU"},
+        ],
+    },
+    {
+        "name": "Obsidian",
+        "kind": "Productividad",
+        "folder_names": ["obsidian"],
+        "location": "roaming",
+        "cleanable": [
+            {"subpath": "Cache", "safety": "safe", "desc": "Cache"},
+            {"subpath": "Code Cache", "safety": "safe", "desc": "Cache del motor"},
+        ],
+    },
+    {
+        "name": "Postman",
+        "kind": "Desarrollo",
+        "folder_names": ["Postman"],
+        "location": "roaming",
+        "cleanable": [
+            {"subpath": "logs", "safety": "safe", "desc": "Logs"},
+            {"subpath": "Code Cache", "safety": "safe", "desc": "Cache"},
+            {"subpath": "GPUCache", "safety": "safe", "desc": "Cache GPU"},
+        ],
+    },
+    {
+        "name": "GitHub Desktop",
+        "kind": "Desarrollo",
+        "folder_names": ["GitHubDesktop"],
+        "location": "local",
+        "cleanable": [
+            {"subpath": "logs", "safety": "safe", "desc": "Logs"},
+        ],
+    },
+    # ============= NAVEGADORES (además de lo que hace Sistema/Navegadores) =============
+    {
+        "name": "Brave Browser",
+        "kind": "Navegador",
+        "folder_names": ["BraveSoftware/Brave-Browser"],
+        "location": "local",
+        "cleanable": [
+            {"subpath": "User Data/*/Cache", "safety": "safe", "desc": "Cache del navegador"},
+            {"subpath": "User Data/*/Code Cache", "safety": "safe", "desc": "Cache JS"},
+            {"subpath": "User Data/*/GPUCache", "safety": "safe", "desc": "Cache GPU"},
+            {"subpath": "User Data/*/Service Worker/CacheStorage", "safety": "safe",
+             "desc": "Cache de service workers"},
+        ],
+    },
 ]
 
 
