@@ -10,19 +10,28 @@ echo "📦 Verificando dependencias runtime..."
   PySide6 send2trash psutil pyinstaller imagehash Pillow requests
 
 echo "🔨 Construyendo CleanMyCompu.app..."
+# OJO: nada de --collect-submodules PIL/imagehash — arrastra scipy entero
+# (100+ MB) y todos los plugins de PIL (50+ formatos). Solo hidden-imports
+# específicos para las clases que realmente usamos.
 ./.venv/bin/pyinstaller \
   --windowed \
   --name CleanMyCompu \
   --osx-bundle-identifier com.cleanmycompu.app \
   --icon assets/AppIcon.icns \
   --add-data "assets:assets" \
-  --collect-submodules PySide6 \
-  --collect-submodules psutil \
-  --collect-submodules PIL \
-  --collect-submodules imagehash \
   --hidden-import PIL.Image \
+  --hidden-import PIL.JpegImagePlugin \
+  --hidden-import PIL.PngImagePlugin \
+  --hidden-import PIL.BmpImagePlugin \
+  --hidden-import PIL.TiffImagePlugin \
+  --hidden-import PIL.WebPImagePlugin \
   --hidden-import PIL._imaging \
   --hidden-import imagehash \
+  --exclude-module scipy \
+  --exclude-module scipy.special \
+  --exclude-module matplotlib \
+  --exclude-module pytest \
+  --exclude-module notebook \
   --clean --noconfirm \
   main.py > /tmp/cleanmycompu-build.log 2>&1
 
