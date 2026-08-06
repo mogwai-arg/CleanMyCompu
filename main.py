@@ -1512,11 +1512,17 @@ class MainWindow(QMainWindow):
         fh = QHBoxLayout(self.footer)
         fh.setContentsMargins(Spacing.XXL, Spacing.LG, Spacing.XXL, Spacing.LG)
         fh.setSpacing(Spacing.LG)
+        self.select_all_button = QPushButton("Seleccionar todo")
+        self.select_all_button.setProperty("role", "secondary")
+        self.select_all_button.clicked.connect(self._on_select_all_clicked)
+        self.select_all_button.setVisible(False)
+
         self.total_label = QLabel("")
         self.total_label.setProperty("role", "h3")
         self.clean_button = QPushButton("Limpiar seleccionados")
         self.clean_button.setProperty("role", "destructive")
         self.clean_button.setEnabled(False)
+        fh.addWidget(self.select_all_button)
         fh.addWidget(self.total_label)
         fh.addStretch(1)
         fh.addWidget(self.clean_button)
@@ -2521,6 +2527,8 @@ class MainWindow(QMainWindow):
         return [r for r in self.rows.values() if r.isVisible() and r.is_selected()]
 
     def _update_footer(self, *args):
+        # Actualizar el botón select all cada vez que cambia el estado
+        self._update_select_all_button()
         s = self.current_section
         if s in ("Sistema", "Navegadores", "Restos de programas", "Desarrollo"):
             rows = self._visible_selected_rows()
@@ -3752,6 +3760,61 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(
             f"{action}: {count}/{len(pids)} procesos afectados.")
         self.start_perf_scan()
+
+    # ---- Select all / Deselect all ----
+
+    def _selectable_rows_and_state(self, section: str):
+        """
+        Devuelve (rows_seleccionables, todas_estan_marcadas).
+        Cada sección tiene rows distintos con checkboxes distintos.
+        """
+        if section in ("Sistema", "Navegadores", "Restos de programas", "Desarrollo"):
+            rows = [r for r in self.rows.values()
+                    if r.isVisible() and r.checkbox.isEnabled()
+                    and r.scan_result and r.scan_result["bytes"] > 0]
+            all_on = bool(rows) and all(r.checkbox.isChecked() for r in rows)
+            return rows, all_on
+        if section == "Duplicados":
+            # Todos los checkboxes de todos los grupos
+            cbs = []
+            for dr in self.dup_rows:
+                cbs.extend(dr.checkboxes)
+            all_on = bool(cbs) and all(cb.isChecked() for cb in cbs)
+            return cbs, all_on
+        if section == "Archivos grandes":
+            cbs = [lr.checkbox for lr in self.large_rows]
+            all_on = bool(cbs) and all(cb.isChecked() for cb in cbs)
+            return cbs, all_on
+        if section == "Actualizador":
+            cbs = [r.checkbox for r in getattr(self, "updater_rows", [])]
+            all_on = bool(cbs) and all(cb.isChecked() for cb in cbs)
+            return cbs, all_on
+        return [], False
+
+    def _update_select_all_button(self):
+        """Muestra/oculta y actualiza el label del botón según estado actual."""
+        s = self.current_section
+        items, all_on = self._selectable_rows_and_state(s)
+        if not items:
+            self.select_all_button.setVisible(False)
+            return
+        self.select_all_button.setVisible(True)
+        self.select_all_button.setText(
+            "Deseleccionar todo" if all_on else "Seleccionar todo")
+
+    def _on_select_all_clicked(self):
+        """Toggle: si todo está marcado → desmarca todo, si no → marca todo."""
+        s = self.current_section
+        items, all_on = self._selectable_rows_and_state(s)
+        if not items:
+            return
+        target = not all_on
+
+        # Los items pueden ser CategoryRow (tienen .checkbox) o QCheckBox directo
+        for it in items:
+            cb = it.checkbox if hasattr(it, "checkbox") else it
+            cb.setChecked(target)
+        self._update_footer()
 
     # ---- Sort handlers (una función por sección — cada row tiene atributos distintos) ----
 
