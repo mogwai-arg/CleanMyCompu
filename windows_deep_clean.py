@@ -60,14 +60,48 @@ def estimate_delivery_opt() -> int:
 
 def estimate_hiberfil() -> int:
     """
-    hiberfil.sys tiene ACL que bloquea lectura sin admin. Estimamos
-    según convención de Microsoft: 0.75 * RAM total.
+    hiberfil.sys tiene ACL que bloquea lectura directa sin admin.
+    Devolvemos:
+      - 0 si el archivo NO existe (hibernación ya desactivada)
+      - estimado (0.75 * RAM) si existe y no podemos leer el tamaño real
+      - tamaño real si podemos leerlo (con admin o si Windows lo permite)
+    Así el diff antes/después mide correctamente si se liberó espacio.
     """
+    hiber_path = Path("C:/hiberfil.sys")
+    # Chequear existencia via Path.exists() puede fallar por ACL — usar WMI/CIM
+    # o simplemente asumir que si podemos hacer stat, existe.
+    exists = False
+    real_size = None
+    try:
+        # os.stat suele funcionar aunque no podamos leer el contenido
+        st = os.stat(str(hiber_path))
+        exists = True
+        real_size = st.st_size
+    except (OSError, PermissionError):
+        # Fallback: usar dir command via subprocess
+        try:
+            result = subprocess.run(
+                ["cmd", "/c", "dir /a-h /a-s C:\\hiberfil.sys"],
+                capture_output=True, text=True, timeout=5,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+            if "hiberfil.sys" in result.stdout:
+                exists = True
+        except Exception:
+            pass
+
+    if not exists:
+        return 0  # hibernación ya desactivada — nada para liberar
+
+    if real_size is not None and real_size > 0:
+        return real_size
+
+    # Existe pero no pudimos medirlo — estimar
     try:
         import psutil
         return int(psutil.virtual_memory().total * 0.75)
     except Exception:
-        return 4 * 1024 ** 3  # fallback 4 GB
+        return 4 * 1024 ** 3
 
 
 def estimate_component_store() -> int:
