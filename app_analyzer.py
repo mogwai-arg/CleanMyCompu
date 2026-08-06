@@ -230,11 +230,113 @@ def _tree_size(path: Path) -> int:
     return total
 
 
+# Nombres de carpetas que casi siempre son cacheables (se pueden borrar libre).
+# Los buscamos recursivamente dentro de cada app.
+_GENERIC_CACHE_NAMES = {
+    "Cache", "Cache_Data", "GPUCache", "Code Cache", "CodeCache",
+    "ShaderCache", "WebCache", "CachedFiles", "CachedData", "CachedExtensions",
+    "DraftCache", "CacheStorage", "preview_files", "PreviewFiles",
+    "blob_storage", "Crashpad", "DiskCache", "CacheClip",
+    "logs", "Logs", "log", "crashes", "Media Cache", "Media Cache Files",
+    "temp", "Temp", "tmp", "IndexedDB",
+}
+
+
 def _resolve_globs(base: Path, subpath: str) -> List[Path]:
-    """Expande '*' del subpath. Devuelve list de paths existentes."""
+    """
+    Encuentra paths que matcheen subpath dentro de base.
+    Estrategia en cascada (para ser tolerante a distintas estructuras):
+      1. Match directo del glob completo
+      2. Match recursivo (** al principio) — encuentra la carpeta a cualquier profundidad
+      3. Si el último segmento es una carpeta cacheable genérica, buscar por rglob
+    """
     import glob
-    pattern = str(base / subpath.replace("/", os.sep))
-    return [Path(m) for m in glob.glob(pattern) if Path(m).exists()]
+    results = []
+    seen = set()
+
+    def _add(p: Path):
+        if not p.exists():
+            return
+        try:
+            key = str(p.resolve())
+        except Exception:
+            key = str(p)
+        if key in seen:
+            return
+        seen.add(key)
+        results.append(p)
+
+    subpath_native = subpath.replace("/", os.sep)
+
+    # 1) Glob directo (con soporte para * y **)
+    pattern1 = str(base / subpath_native)
+    for m in glob.glob(pattern1, recursive=True):
+        _add(Path(m))
+
+    # 2) Glob recursivo prefijado con ** (por si la carpeta está más adentro)
+    if not subpath.startswith("**"):
+        pattern2 = str(base / "**" / subpath_native)
+        try:
+            for m in glob.glob(pattern2, recursive=True):
+                _add(Path(m))
+        except Exception:
+            pass
+
+    # 3) Fallback: si el nombre final es una cache "genérica" y no encontramos nada,
+    #    buscarla recursivamente por nombre exacto (Path.rglob)
+    last = subpath.replace("/", os.sep).split(os.sep)[-1]
+    if not results and last in _GENERIC_CACHE_NAMES:
+        try:
+            for p in base.rglob(last):
+                if p.is_dir():
+                    _add(p)
+        except Exception:
+            pass
+
+    return results
+
+
+def _find_generic_caches(base: Path, max_depth: int = 5,
+                        already_found: Optional[set] = None) -> List[dict]:
+    """
+    Búsqueda genérica: cualquier carpeta con nombre de cache dentro de la app,
+    incluso si no está en la lista específica.
+    """
+    if already_found is None:
+        already_found = set()
+    found = []
+    try:
+        for p in base.rglob("*"):
+            try:
+                if not p.is_dir():
+                    continue
+                # Limitar profundidad
+                depth = len(p.relative_to(base).parts)
+                if depth > max_depth:
+                    continue
+                if p.name not in _GENERIC_CACHE_NAMES:
+                    continue
+                try:
+                    key = str(p.resolve())
+                except Exception:
+                    key = str(p)
+                if key in already_found:
+                    continue
+                already_found.add(key)
+                sz = _tree_size(p)
+                if sz > 5 * 1024 * 1024:  # min 5MB para no ensuciar con ruido
+                    found.append({
+                        "path": p,
+                        "size": sz,
+                        "safety": "safe",
+                        "desc": f"Carpeta '{p.name}' detectada automáticamente (cache/logs).",
+                        "subpath": str(p.relative_to(base)),
+                    })
+            except (OSError, PermissionError):
+                continue
+    except (OSError, PermissionError):
+        pass
+    return found
 
 
 def analyze_app(app: dict,
@@ -264,14 +366,24 @@ def analyze_app(app: dict,
     total_size = 0
     cleanable_items = []
     cleanable_size = 0
+    already_found = set()  # dedupe entre patterns específicos y búsqueda genérica
+
     for _loc, base in base_paths:
         if on_progress:
             on_progress(f"Midiendo {app['name']} en {base.name}…")
         total_size += _tree_size(base)
-        # Cleanable subfolders
+
+        # 1) Patterns específicos del catálogo (más precisos)
         for c in app["cleanable"]:
             matches = _resolve_globs(base, c["subpath"])
             for m in matches:
+                try:
+                    key = str(m.resolve())
+                except Exception:
+                    key = str(m)
+                if key in already_found:
+                    continue
+                already_found.add(key)
                 sz = _tree_size(m)
                 if sz > 0:
                     cleanable_items.append({
@@ -282,8 +394,18 @@ def analyze_app(app: dict,
                         "subpath": c["subpath"],
                     })
                     cleanable_size += sz
+
+        # 2) Búsqueda genérica: cualquier carpeta cacheable no cubierta arriba
+        generic = _find_generic_caches(base, max_depth=6, already_found=already_found)
+        for g in generic:
+            cleanable_items.append(g)
+            cleanable_size += g["size"]
+
     if total_size == 0 and not cleanable_items:
         return None
+
+    # Ordenar items por tamaño desc para que el usuario vea los más gordos arriba
+    cleanable_items.sort(key=lambda x: -x["size"])
 
     return {
         "name": app["name"],
