@@ -957,13 +957,15 @@ class UserScanWorker(QObject):
 
 
 class WindowsCleanRow(QFrame):
-    """Fila de una operación de Limpieza Windows: check + nombre + safety badge + size."""
+    """Fila de una operación de Limpieza Windows: check + nombre + safety badge + size.
+    Toda la fila es clickeable para tildar/destildar."""
     changed = Signal()
 
     def __init__(self, op: dict):
         super().__init__()
         self.setObjectName("category-row")
         self.op = op
+        self.setCursor(Qt.PointingHandCursor)
 
         h = QHBoxLayout(self)
         h.setContentsMargins(Spacing.LG, Spacing.MD, Spacing.LG, Spacing.MD)
@@ -984,7 +986,6 @@ class WindowsCleanRow(QFrame):
         name_row.addWidget(name)
         if op["safety"] == "caution":
             badge = QLabel("REVISAR ANTES")
-            badge.setObjectName("badge-caution")
             badge.setStyleSheet(
                 f"background: {Colors.WARNING}; color: white; "
                 f"padding: 2px 8px; border-radius: 8px; font-size: 10px; font-weight: 600;"
@@ -992,7 +993,6 @@ class WindowsCleanRow(QFrame):
             name_row.addWidget(badge)
         else:
             badge = QLabel("SEGURO")
-            badge.setObjectName("badge-safe")
             badge.setStyleSheet(
                 f"background: {Colors.SUCCESS}; color: white; "
                 f"padding: 2px 8px; border-radius: 8px; font-size: 10px; font-weight: 600;"
@@ -1016,13 +1016,45 @@ class WindowsCleanRow(QFrame):
         size.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         h.addWidget(size)
 
+        # Checkbox más grande y visible
         self.checkbox = QCheckBox()
-        # Marcamos por defecto las 'safe'; las 'caution' quedan opt-in
         self.checkbox.setChecked(op["safety"] == "safe" and op["size"] > 0)
-        self.checkbox.stateChanged.connect(lambda _: self.changed.emit())
+        self.checkbox.setStyleSheet(
+            "QCheckBox::indicator { width: 22px; height: 22px; }"
+        )
+        # Bloqueamos el click directo del checkbox — todo se maneja por el eventFilter
+        # del frame para evitar el doble-toggle cuando cliqueás sobre el checkbox mismo.
+        self.checkbox.setFocusPolicy(Qt.NoFocus)
+        self.checkbox.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        self.checkbox.stateChanged.connect(self._on_state_changed)
         h.addWidget(self.checkbox)
 
         self.setMinimumHeight(72)
+        self._refresh_style()
+
+    def _on_state_changed(self):
+        self._refresh_style()
+        self.changed.emit()
+
+    def _refresh_style(self):
+        """Highlight verde cuando está tildada, para feedback visual claro."""
+        if self.checkbox.isChecked():
+            self.setStyleSheet(
+                "QFrame#category-row { "
+                "background: rgba(52, 199, 89, 0.14); "
+                f"border: 2px solid {Colors.SUCCESS}; "
+                "border-radius: 12px; }"
+            )
+        else:
+            self.setStyleSheet("")  # vuelve al default
+
+    def mousePressEvent(self, event):
+        # Click en cualquier parte de la fila toggle el checkbox
+        if event.button() == Qt.LeftButton:
+            self.checkbox.setChecked(not self.checkbox.isChecked())
+            event.accept()
+            return
+        super().mousePressEvent(event)
 
     def is_selected(self) -> bool:
         return self.checkbox.isChecked()
@@ -2110,6 +2142,29 @@ class MainWindow(QMainWindow):
         )
         self.winclean_layout.addWidget(self.winclean_empty)
 
+        # Toolbar con botones de selección rápida
+        self.winclean_toolbar = QWidget()
+        tb = QHBoxLayout(self.winclean_toolbar)
+        tb.setContentsMargins(0, 0, 0, Spacing.SM)
+        tb.setSpacing(Spacing.SM)
+        hint = QLabel("💡 Tocá cualquier fila para tildarla/destildarla.")
+        hint.setObjectName("row-desc")
+        tb.addWidget(hint, stretch=1)
+        btn_all = QPushButton("Marcar TODO")
+        btn_all.setProperty("role", "secondary")
+        btn_all.clicked.connect(lambda: self._winclean_set_all(True))
+        tb.addWidget(btn_all)
+        btn_safe = QPushButton("Solo las seguras")
+        btn_safe.setProperty("role", "secondary")
+        btn_safe.clicked.connect(self._winclean_only_safe)
+        tb.addWidget(btn_safe)
+        btn_none = QPushButton("Destildar todo")
+        btn_none.setProperty("role", "secondary")
+        btn_none.clicked.connect(lambda: self._winclean_set_all(False))
+        tb.addWidget(btn_none)
+        self.winclean_toolbar.setVisible(False)
+        self.winclean_layout.addWidget(self.winclean_toolbar)
+
         # Botón grande "Ejecutar limpieza" (aparece solo cuando hay filas)
         self.winclean_run_btn = QPushButton("Ejecutar limpieza seleccionada")
         self.winclean_run_btn.setProperty("role", "destructive")
@@ -2124,6 +2179,14 @@ class MainWindow(QMainWindow):
         page.setWidget(content)
         return page
 
+    def _winclean_set_all(self, checked: bool):
+        for r in self.winclean_rows:
+            r.checkbox.setChecked(checked and r.op["size"] > 0)
+
+    def _winclean_only_safe(self):
+        for r in self.winclean_rows:
+            r.checkbox.setChecked(r.op["safety"] == "safe" and r.op["size"] > 0)
+
     def start_windows_clean_scan(self):
         """Calcula tamaños de cada op y pobla filas."""
         # Limpiar filas previas
@@ -2132,6 +2195,7 @@ class MainWindow(QMainWindow):
         self.winclean_rows = []
         self.winclean_empty.setVisible(False)
         self.winclean_run_btn.setVisible(False)
+        self.winclean_toolbar.setVisible(False)
 
         self.winclean_progress.set_title("Calculando tamaños…")
         self.winclean_progress.set_detail(
@@ -2150,8 +2214,9 @@ class MainWindow(QMainWindow):
 
         self.winclean_progress.setVisible(False)
 
-        # Insertar filas antes del botón (posición -2 = antes de btn y stretch)
-        insert_at = self.winclean_layout.count() - 2
+        # Insertar filas ANTES del toolbar (posición: index de toolbar)
+        toolbar_idx = self.winclean_layout.indexOf(self.winclean_toolbar)
+        insert_at = toolbar_idx  # filas van justo antes del toolbar
         for op in ops:
             row = WindowsCleanRow(op)
             row.changed.connect(self._update_windows_clean_totals)
@@ -2159,6 +2224,7 @@ class MainWindow(QMainWindow):
             self.winclean_rows.append(row)
             insert_at += 1
 
+        self.winclean_toolbar.setVisible(True)
         self.winclean_run_btn.setVisible(True)
         self._update_windows_clean_totals()
 
