@@ -20,7 +20,7 @@ from urllib.request import Request, urlopen
 from typing import Optional
 
 
-__version__ = "1.4.0"
+__version__ = "1.5.0"
 
 # URL con el JSON de la última versión.
 # Formato esperado del JSON:

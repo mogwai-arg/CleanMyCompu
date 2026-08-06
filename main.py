@@ -42,6 +42,7 @@ import app_analyzer
 import windows_deep_clean
 import user_scan
 import system_monitor
+import photos_similar
 from confetti import Confetti
 from notifications import notify
 from platform_helpers import is_windows, is_mac, list_all_disks
@@ -138,6 +139,8 @@ SECTIONS = [
      "desc": "Ver qué carpetas ocupan más espacio en tus discos — para entender de dónde vienen esos GB llenos."},
     {"key": "Análisis inteligente", "icon": "sparkles", "menu_group": "HERRAMIENTAS",
      "desc": "Identifica apps en AppData (CapCut, DaVinci, Discord...) y te dice qué es seguro borrar sin romper nada."},
+    {"key": "Fotos similares", "icon": "copy", "menu_group": "HERRAMIENTAS",
+     "desc": "Encuentra fotos visualmente parecidas — misma foto reescalada, editada o en distintos formatos. Usa perceptual hash."},
     {"key": "Limpieza Windows", "icon": "sparkles", "menu_group": "HERRAMIENTAS",
      "desc": "Cachés y archivos de sistema de Windows que suelen ocupar decenas de GB. Requiere permisos de administrador (una ventana UAC).",
      "platform": "win"},
@@ -211,6 +214,14 @@ ONBOARDING = {
         "Archivos grandes olvidados",
         "Muestra archivos de +100 MB que no abrís hace 6+ meses. Los checkboxes vienen sin marcar "
         "porque acá tenés que revisar uno por uno: puede haber cosas importantes.",
+    ),
+    "Fotos similares": (
+        "Encontrá fotos casi idénticas",
+        "A diferencia de Duplicados (que busca archivos byte-a-byte iguales), esto "
+        "encuentra fotos VISUALMENTE parecidas aunque tengan tamaño distinto: la "
+        "misma foto reescalada, con filtros, en distintos formatos (jpg vs heic), o "
+        "con ligeras ediciones. Ordenadas por espacio recuperable — te recomienda "
+        "quedarte con la de mejor calidad (la más grande).",
     ),
     "Monitor": (
         "Salud de tu compu en tiempo real",
@@ -894,6 +905,131 @@ class LargeFileRow(QFrame):
 
     def is_selected(self) -> bool:
         return self.checkbox.isChecked()
+
+
+class PhotoGroupRow(QFrame):
+    """
+    Fila de un grupo de fotos similares. Cada foto tiene checkbox y size distinto.
+    La más grande (mejor calidad) viene desmarcada por default; el resto marcadas
+    para borrar. Recuperable = suma de todas menos la más grande.
+    """
+    changed = Signal()
+
+    def __init__(self, group: dict):
+        super().__init__()
+        self.setObjectName("category-row")
+        self.group = group
+
+        v = QVBoxLayout(self)
+        v.setContentsMargins(Spacing.LG, Spacing.MD, Spacing.LG, Spacing.MD)
+        v.setSpacing(Spacing.SM)
+
+        head = QHBoxLayout()
+        head.setSpacing(Spacing.MD)
+        icon_lbl = QLabel()
+        icon_lbl.setPixmap(make_icon_pixmap("copy", size=22, color=icon_color()))
+        icon_lbl.setFixedSize(28, 28)
+        head.addWidget(icon_lbl)
+
+        col = QVBoxLayout()
+        col.setSpacing(2)
+        title = QLabel(f"{len(group['items'])} fotos similares")
+        title.setObjectName("row-name")
+        subtitle = QLabel(
+            f"Total: {human_bytes(group['total_size'])} · "
+            f"Recuperable manteniendo la más grande: "
+            f"{human_bytes(group['recoverable'])}")
+        subtitle.setObjectName("row-desc")
+        subtitle.setWordWrap(True)
+        col.addWidget(title)
+        col.addWidget(subtitle)
+        head.addLayout(col, stretch=1)
+        v.addLayout(head)
+
+        # Lista de fotos con checkbox
+        self.checkboxes = []
+        # items ya vienen ordenados por size desc (la primera es "la mejor")
+        for i, item in enumerate(group["items"]):
+            row = QHBoxLayout()
+            row.setSpacing(Spacing.SM)
+            row.setContentsMargins(28, 0, 0, 0)  # indent
+
+            cb = QCheckBox()
+            # Primera (la más grande) desmarcada; resto marcadas para borrar
+            cb.setChecked(i > 0)
+            cb.stateChanged.connect(lambda _: self.changed.emit())
+            self.checkboxes.append(cb)
+            row.addWidget(cb)
+
+            # Marker "mejor calidad" para la primera
+            if i == 0:
+                best_lbl = QLabel("MEJOR")
+                best_lbl.setStyleSheet(
+                    f"background: {Colors.SUCCESS}; color: white; "
+                    "padding: 2px 8px; border-radius: 8px; font-size: 10px; "
+                    "font-weight: 700;")
+                best_lbl.setFixedWidth(60)
+                best_lbl.setAlignment(Qt.AlignCenter)
+                row.addWidget(best_lbl)
+            else:
+                spacer = QLabel("")
+                spacer.setFixedWidth(60)
+                row.addWidget(spacer)
+
+            path = item["path"]
+            info = QLabel(f"{path.name}  —  {path.parent}")
+            info.setObjectName("row-desc")
+            info.setToolTip(str(path))
+            info.setTextInteractionFlags(Qt.TextSelectableByMouse)
+            row.addWidget(info, stretch=1)
+
+            sz = QLabel(human_bytes(item["size"]))
+            sz.setObjectName("row-desc")
+            sz.setMinimumWidth(70)
+            sz.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            row.addWidget(sz)
+
+            row_w = QWidget()
+            row_w.setLayout(row)
+            v.addWidget(row_w)
+
+        self.setMinimumHeight(90)
+
+    def bytes_to_free(self) -> int:
+        return sum(item["size"] for cb, item in zip(self.checkboxes, self.group["items"])
+                   if cb.isChecked())
+
+    def selected_paths(self) -> List[Path]:
+        return [item["path"] for cb, item in zip(self.checkboxes, self.group["items"])
+                if cb.isChecked()]
+
+
+class PhotoSimilarWorker(QObject):
+    """Worker en background para escanear fotos similares."""
+    progress = Signal(str)
+    group_found = Signal(object)
+    finished = Signal()
+
+    def __init__(self, directories: List[Path]):
+        super().__init__()
+        self.directories = directories
+        self.cancel_flag = photos_similar.ScanCancel()
+
+    def cancel(self):
+        self.cancel_flag.cancel()
+
+    def run(self):
+        try:
+            photos_similar.find_similar(
+                directories=self.directories,
+                threshold=5,
+                on_progress=lambda m: self.progress.emit(m),
+                on_group_found=lambda g: self.group_found.emit(g),
+                cancel=self.cancel_flag,
+            )
+        except Exception as e:
+            self.progress.emit(f"Error: {e}")
+        self.finished.emit()
 
 
 class MonitorStatCard(QFrame):
@@ -1911,6 +2047,7 @@ class MainWindow(QMainWindow):
         self.page_windows_clean = self._build_windows_clean_page()
         self.page_user_scan = self._build_user_scan_page()
         self.page_monitor = self._build_monitor_page()
+        self.page_photos = self._build_photos_page()
         self.perf_rows = []  # inicializar
         self.stack.addWidget(self.page_dashboard)     # 0
         self.stack.addWidget(self.page_categories)    # 1
@@ -1928,6 +2065,7 @@ class MainWindow(QMainWindow):
         self.stack.addWidget(self.page_windows_clean) # 13
         self.stack.addWidget(self.page_user_scan)     # 14
         self.stack.addWidget(self.page_monitor)       # 15
+        self.stack.addWidget(self.page_photos)        # 16
         v.addWidget(self.stack, stretch=1)
 
         # Footer
@@ -2883,6 +3021,177 @@ class MainWindow(QMainWindow):
         self._celebrate()
         self.start_user_scan()
 
+    def _build_photos_page(self) -> QWidget:
+        page = QScrollArea()
+        page.setObjectName("detail-scroll")
+        page.setWidgetResizable(True)
+        page.setFrameShape(QFrame.NoFrame)
+        content = QWidget()
+        self.photos_layout = QVBoxLayout(content)
+        self.photos_layout.setContentsMargins(Spacing.XXL, 0, Spacing.XXL, Spacing.XL)
+        self.photos_layout.setSpacing(Spacing.SM)
+
+        self.photos_progress = ProgressBanner(cancellable=True)
+        self.photos_progress.setVisible(False)
+        self.photos_layout.addWidget(self.photos_progress)
+
+        self.photos_empty = EmptyState(
+            icon_name="copy",
+            title="Encontrá fotos casi idénticas",
+            body="Escaneo tu carpeta de fotos buscando imágenes visualmente parecidas: "
+                 "la misma foto reescalada, en distintos formatos (jpg vs heic), "
+                 "editada o con filtros. Uso perceptual hash — tarda un rato pero "
+                 "encuentra duplicados que nadie más ve.",
+            action_label="Elegir carpeta y buscar",
+            action_callback=lambda: self.start_photos_scan(),
+        )
+        self.photos_layout.addWidget(self.photos_empty)
+        self.photos_layout.addStretch(1)
+
+        self.photo_rows: List[PhotoGroupRow] = []
+        page.setWidget(content)
+        return page
+
+    def start_photos_scan(self):
+        if not photos_similar.is_available():
+            InfoDialog(
+                title="Falta una librería",
+                body="Fotos similares necesita 'imagehash' y 'Pillow'. "
+                     "Corré: pip install imagehash Pillow",
+                icon_name="alert-triangle", icon_color=Colors.WARNING, parent=self,
+            ).exec()
+            return
+
+        # Selector de carpetas donde buscar
+        opts = []
+        for d in photos_similar.default_photo_dirs():
+            opts.append({"path": d, "label": d.name, "default_checked": True})
+        # También ofrecer discos externos si hay
+        for disk in list_all_disks():
+            mp = Path(disk["mountpoint"])
+            if mp not in [o["path"] for o in opts]:
+                opts.append({
+                    "path": mp, "label": f"Disco {disk['label']}",
+                    "default_checked": False,
+                })
+
+        if not opts:
+            InfoDialog(
+                title="Sin carpetas de fotos",
+                body="No encontré carpetas de Pictures/Fotos/Desktop. "
+                     "Podés reintentarlo desde otra ruta.",
+                icon_name="alert-triangle", icon_color=Colors.WARNING, parent=self,
+            ).exec()
+            return
+
+        dlg = DriveSelectorDialog(
+            title="¿Dónde buscar fotos similares?",
+            subtitle="Elegí las carpetas donde tenés fotos. Puede tardar bastante — "
+                     "cada foto necesita calcular su hash. Los resultados aparecen "
+                     "en vivo abajo.",
+            roots=opts, parent=self,
+        )
+        if dlg.exec() != QDialog.Accepted:
+            return
+        selected_dirs = [Path(p) for p in dlg.selected_paths()]
+        if not selected_dirs:
+            return
+
+        # Limpiar filas previas
+        for r in self.photo_rows:
+            r.setParent(None)
+        self.photo_rows = []
+        self.photos_empty.setVisible(False)
+        self.action_button.setEnabled(False)
+
+        self.photos_progress.set_title("Buscando fotos similares…")
+        self.photos_progress.set_detail("Los grupos aparecen abajo a medida que los encuentro.")
+        self.photos_progress.cancel_btn.setEnabled(True)
+        self.photos_progress.cancel_btn.setText("Cancelar")
+        self.photos_progress.setVisible(True)
+
+        self.thread = QThread()
+        self.worker = PhotoSimilarWorker(directories=selected_dirs)
+        self.worker.moveToThread(self.thread)
+        self.thread.started.connect(self.worker.run)
+        self.worker.progress.connect(lambda m: self.photos_progress.set_detail(m))
+        self.worker.group_found.connect(self._on_photo_group_found)
+        self.worker.finished.connect(self._on_photos_scan_done)
+        self.worker.finished.connect(self.thread.quit)
+        self.worker.finished.connect(self.worker.deleteLater)
+        self.thread.finished.connect(self.thread.deleteLater)
+        self.photos_progress.cancelled.connect(self.worker.cancel)
+        self.thread.start()
+
+    def _on_photo_group_found(self, group: dict):
+        insert_at = self.photos_layout.count() - 1
+        row = PhotoGroupRow(group)
+        row.changed.connect(self._update_footer)
+        self.photos_layout.insertWidget(insert_at, row)
+        self.photo_rows.append(row)
+        self._update_footer()
+        total_free = sum(r.bytes_to_free() for r in self.photo_rows)
+        self.statusBar().showMessage(
+            f"{len(self.photo_rows)} grupos · recuperable seleccionado: "
+            f"{human_bytes(total_free)}"
+        )
+
+    def _on_photos_scan_done(self):
+        self.photos_progress.setVisible(False)
+        self.action_button.setEnabled(True)
+        # Habilitar footer para poder limpiar
+        if self.photo_rows:
+            self.footer.setVisible(True)
+            self.clean_button.setText("Borrar seleccionadas")
+            try:
+                self.clean_button.clicked.disconnect()
+            except (TypeError, RuntimeError):
+                pass
+            self.clean_button.clicked.connect(self._on_clean_photos)
+            self._update_footer()
+        else:
+            self.photos_empty.set_body(
+                "No encontré fotos similares. O tu librería está limpia, o "
+                "necesitás incluir más carpetas.")
+            self.photos_empty.setVisible(True)
+
+    def _on_clean_photos(self):
+        # Reunir todas las fotos tildadas
+        to_delete = []
+        for r in self.photo_rows:
+            to_delete.extend(r.selected_paths())
+        if not to_delete:
+            return
+        total = sum(p.stat().st_size for p in to_delete if p.exists())
+        items = [{"name": p.name, "icon": "copy",
+                  "bytes": p.stat().st_size if p.exists() else 0}
+                 for p in to_delete]
+        dlg = ConfirmCleanDialog(items, total, parent=self)
+        dlg.setWindowTitle("Borrar fotos similares")
+        if dlg.exec() != QDialog.Accepted:
+            return
+        freed = 0
+        for p in to_delete:
+            try:
+                from send2trash import send2trash
+                if p.exists():
+                    sz = p.stat().st_size
+                    send2trash(str(p))
+                    freed += sz
+            except Exception:
+                try:
+                    if p.exists():
+                        sz = p.stat().st_size
+                        p.unlink()
+                        freed += sz
+                except OSError:
+                    pass
+        stats.record("Fotos similares", freed)
+        self.storage_bar.refresh()
+        self._celebrate()
+        # Re-escanear
+        self.start_photos_scan()
+
     def _build_monitor_page(self) -> QWidget:
         page = QScrollArea()
         page.setObjectName("detail-scroll")
@@ -3651,6 +3960,18 @@ class MainWindow(QMainWindow):
             self.action_button.setVisible(False)
             self.footer.setVisible(False)
             self._start_monitor_timer()
+        elif section == "Fotos similares":
+            self.stack.setCurrentIndex(16)
+            self.action_button.setVisible(True)
+            self.action_button.setText("Buscar fotos similares")
+            self.footer.setVisible(bool(getattr(self, "photo_rows", [])))
+            if getattr(self, "photo_rows", []):
+                self.clean_button.setText("Borrar seleccionadas")
+                try:
+                    self.clean_button.clicked.disconnect()
+                except (TypeError, RuntimeError):
+                    pass
+                self.clean_button.clicked.connect(self._on_clean_photos)
         self._update_footer()
 
     def _apply_category_filter(self, group: str):
@@ -3680,6 +4001,7 @@ class MainWindow(QMainWindow):
             "Actualizador": lambda: not getattr(self, "updater_rows", []),
             "Rendimiento": lambda: not getattr(self, "perf_rows", []),
             "Análisis inteligente": lambda: not getattr(self, "smart_rows", []),
+            "Fotos similares": lambda: not getattr(self, "photo_rows", []),
         }
         check = empty_when_no_data.get(section)
         should_hide = check() if check else False
@@ -3709,6 +4031,8 @@ class MainWindow(QMainWindow):
             self.start_windows_clean_scan()
         elif s == "Escaneo de Users":
             self.start_user_scan()
+        elif s == "Fotos similares":
+            self.start_photos_scan()
 
     # ---- Escaneo de categorías ----
 
@@ -3858,6 +4182,10 @@ class MainWindow(QMainWindow):
                 f"{n} paquete(s) seleccionado(s)" if n
                 else "Marcá los paquetes que querés actualizar")
             self.clean_button.setEnabled(n > 0)
+        elif s == "Fotos similares":
+            total = sum(r.bytes_to_free() for r in getattr(self, "photo_rows", []))
+            self.total_label.setText(f"Total a liberar: {human_bytes(total)}")
+            self.clean_button.setEnabled(total > 0)
         else:
             self.total_label.setText("")
             self._refresh_action_button_visibility(s)

@@ -286,7 +286,7 @@ function Run-Build {
         Set-Progress 30 "Instalando dependencias (PySide6, psutil, pyinstaller, send2trash)..."
         Add-Log "Esto puede tardar 2-5 minutos bajando ~50 MB. Aguantame..."
         # SIN --quiet + usando python -m pip por si pip.exe tiene problemas
-        $rc = Invoke-Silent ".venv\Scripts\python.exe" @("-m", "pip", "install", "PySide6", "send2trash", "psutil", "pyinstaller") "pip install deps" $true
+        $rc = Invoke-Silent ".venv\Scripts\python.exe" @("-m", "pip", "install", "PySide6", "send2trash", "psutil", "pyinstaller", "imagehash", "Pillow") "pip install deps" $true
         if ($rc -ne 0) {
             Add-Log "ERROR: pip install fallo con exit code $rc."
             Add-Log "Mira las lineas de arriba: si aparece 'Could not find' es problema de red/version."
