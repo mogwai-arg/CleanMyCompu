@@ -437,6 +437,29 @@ def build_stylesheet(dark: bool = False) -> str:
         margin-top: 4px;
     }}
 
+    /* ---- ComboBox del SortBar ---- */
+    QComboBox {{
+        background: {surface};
+        border: 1px solid {border};
+        border-radius: {R.SM}px;
+        padding: 6px 10px;
+        font-size: {T.SM}px;
+        color: {text};
+        min-height: 22px;
+    }}
+    QComboBox:hover {{ border-color: {text_sec}; }}
+    QComboBox::drop-down {{
+        border: none;
+        width: 22px;
+    }}
+    QComboBox QAbstractItemView {{
+        background: {surface};
+        border: 1px solid {border};
+        selection-background-color: {text};
+        selection-color: {bg};
+        outline: none;
+    }}
+
     /* ---- Search bar en secciones largas ---- */
     #section-search {{
         background: {surface};

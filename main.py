@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
     QPushButton, QLabel, QCheckBox, QScrollArea, QFrame, QListWidget,
     QListWidgetItem, QProgressBar, QStatusBar, QStackedWidget, QDialog,
     QGraphicsOpacityEffect, QGraphicsDropShadowEffect, QMessageBox, QLineEdit,
+    QComboBox,
 )
 from PySide6.QtGui import QColor
 
@@ -958,6 +959,41 @@ class StorageBar(QWidget):
         self.update_lbl.mousePressEvent = lambda e: updater.open_download_page(url)
 
 
+class SortBar(QWidget):
+    """
+    Barra chica de ordenamiento con un QComboBox. Emite sort_changed(key)
+    cuando el usuario elige otra opción. Cada sección define sus keys y
+    los interpreta en su handler.
+    """
+    sort_changed = Signal(str)
+
+    def __init__(self, options: list, parent=None):
+        """options: lista de (key, label). Ej: [('size_desc', 'Peso (mayor a menor)'), ...]"""
+        super().__init__(parent)
+        h = QHBoxLayout(self)
+        h.setContentsMargins(Spacing.LG, Spacing.XS, Spacing.LG, Spacing.XS)
+        h.setSpacing(Spacing.SM)
+        lbl = QLabel("Ordenar por:")
+        lbl.setObjectName("row-desc")
+        h.addWidget(lbl)
+        self.combo = QComboBox()
+        for key, label in options:
+            self.combo.addItem(label, key)
+        self.combo.currentIndexChanged.connect(self._on_change)
+        self.combo.setMinimumWidth(280)
+        h.addWidget(self.combo)
+        h.addStretch(1)
+        self.setVisible(False)  # oculta hasta que haya resultados
+
+    def _on_change(self, idx):
+        key = self.combo.itemData(idx)
+        if key:
+            self.sort_changed.emit(key)
+
+    def current_key(self) -> str:
+        return self.combo.itemData(self.combo.currentIndex()) or ""
+
+
 class ScrimOverlay(QWidget):
     """Fondo semi-transparente que oscurece la ventana detrás del ProgressDialog."""
 
@@ -1548,6 +1584,15 @@ class MainWindow(QMainWindow):
         self.dup_layout = QVBoxLayout(content)
         self.dup_layout.setContentsMargins(Spacing.XXL, 0, Spacing.XXL, Spacing.XL)
         self.dup_layout.setSpacing(Spacing.SM)
+        self.dup_sort = SortBar([
+            ("size_desc", "Espacio recuperable (mayor a menor)"),
+            ("size_asc", "Espacio recuperable (menor a mayor)"),
+            ("count_desc", "Cantidad de copias (más a menos)"),
+            ("single_desc", "Tamaño de cada archivo (mayor a menor)"),
+            ("name_asc", "Nombre (A → Z)"),
+        ])
+        self.dup_sort.sort_changed.connect(self._sort_dup_rows)
+        self.dup_layout.addWidget(self.dup_sort)
         self.dup_empty = EmptyState(
             icon_name="copy",
             title="Encontrá archivos duplicados",
@@ -1579,6 +1624,16 @@ class MainWindow(QMainWindow):
         self.app_search.textChanged.connect(self._filter_apps)
         self.app_search.setVisible(False)
         self.app_layout.addWidget(self.app_search)
+
+        self.app_sort = SortBar([
+            ("recommend_first", "Recomendadas primero"),
+            ("size_desc", "Peso (mayor a menor)"),
+            ("size_asc", "Peso (menor a mayor)"),
+            ("name_asc", "Nombre (A → Z)"),
+            ("last_used_asc", "Menos usadas primero"),
+        ])
+        self.app_sort.sort_changed.connect(self._sort_app_rows)
+        self.app_layout.addWidget(self.app_sort)
 
         self.app_empty = EmptyState(
             icon_name="app-window",
@@ -1614,6 +1669,15 @@ class MainWindow(QMainWindow):
         self.large_layout = QVBoxLayout(content)
         self.large_layout.setContentsMargins(Spacing.XXL, 0, Spacing.XXL, Spacing.XL)
         self.large_layout.setSpacing(Spacing.SM)
+        self.large_sort = SortBar([
+            ("size_desc", "Peso (mayor a menor)"),
+            ("size_asc", "Peso (menor a mayor)"),
+            ("date_asc", "Más viejos primero (último acceso)"),
+            ("date_desc", "Más recientes primero"),
+            ("name_asc", "Nombre (A → Z)"),
+        ])
+        self.large_sort.sort_changed.connect(self._sort_large_rows)
+        self.large_layout.addWidget(self.large_sort)
         self.large_empty = EmptyState(
             icon_name="hard-drive",
             title="Archivos grandes olvidados",
@@ -1770,6 +1834,15 @@ class MainWindow(QMainWindow):
         self.perf_layout = QVBoxLayout(content)
         self.perf_layout.setContentsMargins(Spacing.XXL, 0, Spacing.XXL, Spacing.XL)
         self.perf_layout.setSpacing(Spacing.SM)
+
+        self.perf_sort = SortBar([
+            ("mem_desc", "RAM (mayor a menor)"),
+            ("mem_asc", "RAM (menor a mayor)"),
+            ("cpu_desc", "CPU (mayor a menor)"),
+            ("name_asc", "Nombre (A → Z)"),
+        ])
+        self.perf_sort.sort_changed.connect(self._sort_perf_rows)
+        self.perf_layout.addWidget(self.perf_sort)
 
         # Card de estado de RAM del sistema (se refresca al escanear)
         self.perf_memory_card = QFrame()
@@ -2507,6 +2580,8 @@ class MainWindow(QMainWindow):
         return opts
 
     def start_duplicates_scan(self):
+        # Ocultar sort bar al iniciar
+        self.dup_sort.setVisible(False)
         # 1) Selector de discos/carpetas
         opts = self._build_duplicates_root_options()
         if not opts:
@@ -2568,6 +2643,9 @@ class MainWindow(QMainWindow):
         row.changed.connect(self._update_footer)
         self.dup_layout.insertWidget(insert_at, row)
         self.dup_rows.append(row)
+        # Mostrar SortBar tras el primer resultado
+        if len(self.dup_rows) == 1:
+            self.dup_sort.setVisible(True)
         self._update_footer()
         # Actualizar contador en el status bar (dinámico)
         total = sum(dr.bytes_to_free() for dr in self.dup_rows)
@@ -2665,6 +2743,7 @@ class MainWindow(QMainWindow):
         self.app_empty.setVisible(False)
         self.app_search.setVisible(False)
         self.app_search.clear()
+        self.app_sort.setVisible(False)
 
         self.overlay.show_over()
         self.progress_dialog = ProgressDialog("Buscando apps instaladas…", parent=self)
@@ -2693,9 +2772,10 @@ class MainWindow(QMainWindow):
             self.app_empty.setVisible(True)
             self.app_search.setVisible(False)
             return
-        # Con apps cargadas, mostrar el buscador
+        # Con apps cargadas, mostrar el buscador y el sort bar
         self.app_search.setVisible(True)
         self.app_search.clear()
+        self.app_sort.setVisible(True)
         # Filtrar recomendaciones ignoradas por el usuario
         for a in apps:
             if a["bundle_id"] in self.ignored_uninstall_recs:
@@ -2967,6 +3047,7 @@ class MainWindow(QMainWindow):
             r.setParent(None)
         self.large_rows = []
         self.large_empty.setVisible(False)
+        self.large_sort.setVisible(False)
 
         self.overlay.show_over()
         self.progress_dialog = ProgressDialog("Buscando archivos grandes…", parent=self)
@@ -3011,6 +3092,7 @@ class MainWindow(QMainWindow):
         if "Archivos grandes" in self.dashboard_cards:
             self.dashboard_cards["Archivos grandes"].set_status(
                 f"{len(files)} archivos · {human_bytes(total)}", highlight=True)
+        self.large_sort.setVisible(True)
         self._update_footer()
         if not self.isActiveWindow():
             notify("Archivos grandes",
@@ -3500,6 +3582,7 @@ class MainWindow(QMainWindow):
             r.setParent(None)
         self.perf_rows = []
         self.perf_empty.setVisible(False)
+        self.perf_sort.setVisible(False)
 
         self.overlay.show_over()
         self.progress_dialog = ProgressDialog("Buscando procesos…", parent=self)
@@ -3551,6 +3634,7 @@ class MainWindow(QMainWindow):
         total_mb = performance.total_memory_used_by_processes(procs)
         self.statusBar().showMessage(
             f"{len(procs)} procesos consumiendo {total_mb:.0f} MB de RAM en total.")
+        self.perf_sort.setVisible(True)
         self._refresh_action_button_visibility()
 
     def _on_perf_action(self, pids, action: str):
@@ -3566,6 +3650,87 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(
             f"{action}: {count}/{len(pids)} procesos afectados.")
         self.start_perf_scan()
+
+    # ---- Sort handlers (una función por sección — cada row tiene atributos distintos) ----
+
+    def _reorder_rows(self, layout, rows: list, sorted_rows: list):
+        """
+        Reordena widgets en un layout sin destruirlos.
+        Los remueve todos y los reinserta en el nuevo orden ANTES del stretch/empty final.
+        """
+        # Guardar posición del stretch (última posición) — todos los rows van ANTES
+        # Encontrar el índice donde termina el stretch
+        # Simplificación: removemos y reinsertamos al mismo bloque
+        for r in rows:
+            layout.removeWidget(r)
+        # Reinsertar al final (antes del stretch si hay)
+        for r in sorted_rows:
+            layout.insertWidget(layout.count() - 1, r)
+
+    def _sort_dup_rows(self, key: str):
+        if not self.dup_rows:
+            return
+        keys = {
+            "size_desc":    lambda r: -r.bytes_to_free(),
+            "size_asc":     lambda r: r.bytes_to_free(),
+            "count_desc":   lambda r: -len(r.group),
+            "single_desc":  lambda r: -getattr(r, "file_size", 0),
+            "name_asc":     lambda r: r.group[0].name.lower() if r.group else "",
+        }
+        fn = keys.get(key, keys["size_desc"])
+        srt = sorted(self.dup_rows, key=fn)
+        self._reorder_rows(self.dup_layout, self.dup_rows, srt)
+        self.dup_rows = srt
+
+    def _sort_large_rows(self, key: str):
+        if not self.large_rows:
+            return
+        keys = {
+            "size_desc":  lambda r: -r.item.get("size", 0),
+            "size_asc":   lambda r: r.item.get("size", 0),
+            "date_asc":   lambda r: r.item.get("atime", 0),
+            "date_desc":  lambda r: -r.item.get("atime", 0),
+            "name_asc":   lambda r: Path(r.item["path"]).name.lower(),
+        }
+        fn = keys.get(key, keys["size_desc"])
+        srt = sorted(self.large_rows, key=fn)
+        self._reorder_rows(self.large_layout, self.large_rows, srt)
+        self.large_rows = srt
+
+    def _sort_app_rows(self, key: str):
+        if not self.app_rows:
+            return
+        def recommend_key(r):
+            a = r.app
+            # Recomendados primero, después por meses sin usar, después nombre
+            if a.get("recommend") == "uninstall":
+                return (0, -(a.get("months_unused") or 0), a["name"].lower())
+            return (1, a["name"].lower())
+        keys = {
+            "recommend_first": recommend_key,
+            "size_desc":       lambda r: -r.app.get("size", 0),
+            "size_asc":        lambda r: r.app.get("size", 0),
+            "name_asc":        lambda r: r.app["name"].lower(),
+            "last_used_asc":   lambda r: r.app.get("last_used") or 0,
+        }
+        fn = keys.get(key, keys["recommend_first"])
+        srt = sorted(self.app_rows, key=fn)
+        self._reorder_rows(self.app_layout, self.app_rows, srt)
+        self.app_rows = srt
+
+    def _sort_perf_rows(self, key: str):
+        if not self.perf_rows:
+            return
+        keys = {
+            "mem_desc":  lambda r: -r.group.get("memory_mb", 0),
+            "mem_asc":   lambda r: r.group.get("memory_mb", 0),
+            "cpu_desc":  lambda r: -r.group.get("cpu_pct", 0),
+            "name_asc":  lambda r: r.group.get("name", "").lower(),
+        }
+        fn = keys.get(key, keys["mem_desc"])
+        srt = sorted(self.perf_rows, key=fn)
+        self._reorder_rows(self.perf_layout, self.perf_rows, srt)
+        self.perf_rows = srt
 
     # ---- Helpers ----
 
