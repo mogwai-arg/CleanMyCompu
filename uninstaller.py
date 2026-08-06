@@ -111,6 +111,16 @@ def _months_ago(ts: Optional[float]) -> Optional[int]:
 
 def list_installed_apps() -> List[dict]:
     """
+    Devuelve lista de apps instaladas.
+    Dispatch: en Windows usa uninstaller_windows.py (registry).
+    En macOS escanea /Applications.
+    """
+    import sys
+    if sys.platform.startswith("win"):
+        from uninstaller_windows import list_installed_apps as _win_list
+        return _win_list()
+
+    """
     Devuelve lista de apps instaladas por el usuario en /Applications.
     Cada app: {name, path, bundle_id, size, last_used, months_unused, recommend, reason}
     Ordenada: las "no usadas hace mucho" primero (recomendadas para desinstalar).
@@ -218,10 +228,23 @@ def get_uninstall_targets(app: dict) -> dict:
 
 def is_app_running(app_name: str) -> bool:
     """Detecta si la .app está actualmente corriendo (compat)."""
+    import sys
+    if sys.platform.startswith("win"):
+        from uninstaller_windows import is_app_running as _win
+        return _win(app_name)
     return len(find_related_processes(app_name, "")) > 0
 
 
 def find_related_processes(app_name: str, bundle_id: str) -> List[dict]:
+    """Dispatch por plataforma."""
+    import sys
+    if sys.platform.startswith("win"):
+        from uninstaller_windows import find_related_processes as _win
+        return _win(app_name, bundle_id)
+    return _find_related_processes_mac(app_name, bundle_id)
+
+
+def _find_related_processes_mac(app_name: str, bundle_id: str) -> List[dict]:
     """
     Encuentra procesos relacionados con una app, incluyendo helpers en segundo plano.
 
@@ -437,6 +460,16 @@ def uninstall_with_admin(paths: list) -> dict:
 
 def kill_processes(pids: List[int], force: bool = False,
                    wait_seconds: float = 0.8) -> List[int]:
+    """Dispatch."""
+    import sys
+    if sys.platform.startswith("win"):
+        from uninstaller_windows import kill_processes as _win
+        return _win(pids, force, wait_seconds)
+    return _kill_processes_mac(pids, force, wait_seconds)
+
+
+def _kill_processes_mac(pids: List[int], force: bool = False,
+                        wait_seconds: float = 0.8) -> List[int]:
     """
     Cierra una lista de procesos. Primero SIGTERM (limpio); si force=True,
     directamente SIGKILL.
@@ -485,6 +518,16 @@ def _unload_launch_agent(plist_path: Path):
 
 def uninstall_app(target: dict,
                   on_progress: Optional[Callable[[str], None]] = None) -> dict:
+    """Dispatch por plataforma."""
+    import sys
+    if sys.platform.startswith("win"):
+        from uninstaller_windows import uninstall_app as _win
+        return _win(target, on_progress)
+    return _uninstall_app_mac(target, on_progress)
+
+
+def _uninstall_app_mac(target: dict,
+                       on_progress: Optional[Callable[[str], None]] = None) -> dict:
     """
     Desinstala una app y sus rastros.
 

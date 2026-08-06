@@ -170,5 +170,64 @@ def kill(pid: int) -> bool:
 
 
 def total_memory_used_by_processes(processes: List[dict]) -> float:
-    """Suma la RAM (en MB) de una lista de procesos."""
+    """Suma la RAM (en MB) de una lista de procesos (grupos o individuales)."""
     return sum(p.get('memory_mb', 0) for p in processes)
+
+
+def list_processes_grouped(min_memory_mb: int = 50) -> List[dict]:
+    """
+    Agrupa procesos por nombre y suma su memoria. Ideal para apps que
+    tienen MUCHOS subprocesos (Chrome, Dropbox, VS Code, Slack — cada
+    pestaña/ventana suele ser un proceso separado).
+
+    Devuelve: [{name, count, memory_mb, cpu_pct, pids, any_suspended, all_suspended}]
+    ordenado por memory desc.
+    """
+    if not HAS_PSUTIL:
+        return []
+    raw = list_processes(min_memory_mb=1)   # traer todos, agrupar después
+    groups: dict = {}
+    for p in raw:
+        name = p["name"] or "?"
+        # Normalizar: quitar .exe en Windows para que "chrome" y "chrome.exe" agrupen
+        key = name.lower().replace(".exe", "")
+        if key not in groups:
+            groups[key] = {
+                "name": name.replace(".exe", "") if name.endswith(".exe") else name,
+                "count": 0,
+                "memory_mb": 0.0,
+                "cpu_pct": 0.0,
+                "pids": [],
+                "any_suspended": False,
+                "all_suspended": True,
+                "protected": p.get("protected", False),
+            }
+        g = groups[key]
+        g["count"] += 1
+        g["memory_mb"] += p["memory_mb"]
+        g["cpu_pct"] += p.get("cpu_pct", 0)
+        g["pids"].append(p["pid"])
+        if p.get("is_suspended"):
+            g["any_suspended"] = True
+        else:
+            g["all_suspended"] = False
+
+    # Filtrar y ordenar
+    results = [g for g in groups.values() if g["memory_mb"] >= min_memory_mb]
+    results.sort(key=lambda x: -x["memory_mb"])
+    return results
+
+
+def suspend_all(pids: List[int]) -> int:
+    """Suspende una lista de PIDs. Devuelve cuántos tuvo éxito."""
+    return sum(1 for pid in pids if suspend(pid))
+
+
+def resume_all(pids: List[int]) -> int:
+    """Reanuda una lista de PIDs. Devuelve cuántos tuvo éxito."""
+    return sum(1 for pid in pids if resume(pid))
+
+
+def kill_all(pids: List[int]) -> int:
+    """Cierra una lista de PIDs. Devuelve cuántos tuvo éxito."""
+    return sum(1 for pid in pids if kill(pid))

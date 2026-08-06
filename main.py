@@ -35,9 +35,10 @@ import updater
 import stats
 import permissions
 import performance
+import disk_analyzer
 from confetti import Confetti
 from notifications import notify
-from platform_helpers import is_windows, is_mac
+from platform_helpers import is_windows, is_mac, list_all_disks
 from PySide6.QtCore import QTimer
 
 
@@ -127,6 +128,8 @@ SECTIONS = [
      "desc": "Agentes de inicio del usuario que se ejecutan al arrancar la compu."},
     {"key": "Rendimiento", "icon": "cpu", "menu_group": "HERRAMIENTAS",
      "desc": "Suspender apps que consumen RAM para liberar memoria virtual sin cerrarlas."},
+    {"key": "Analizador de disco", "icon": "hard-drive", "menu_group": "HERRAMIENTAS",
+     "desc": "Ver qué carpetas ocupan más espacio en tus discos — para entender de dónde vienen esos GB llenos."},
     {"key": "Actualizador", "icon": "download", "menu_group": "HERRAMIENTAS",
      "desc": "Verifica y actualiza apps y paquetes instalados via Homebrew.",
      "platform": "darwin"},
@@ -228,6 +231,13 @@ ONBOARDING = {
         "(pausar temporalmente sin cerrarlos, sin perder trabajo) para liberar "
         "memoria virtual cuando la compu se queda lenta. Después los reanudás "
         "cuando quieras y vuelven a donde estaban.",
+    ),
+    "Analizador de disco": (
+        "¿En qué se te fueron los GB?",
+        "Escanea cada disco y te muestra qué carpetas ocupan más espacio. "
+        "Perfecto para entender por qué te queda tan poco libre — usualmente "
+        "se descubren carpetas insospechadas con decenas de GB (caches viejas, "
+        "instaladores, videos duplicados, etc.).",
     ),
 }
 
@@ -398,16 +408,37 @@ class UpdateCheckWorker(QObject):
         self.finished.emit(updater.check_for_update())
 
 
-class ProcessListWorker(QObject):
-    """Escanea procesos en background (list_processes puede tardar 1-2s)."""
-    finished = Signal(object)  # list[dict]
+class _DiskScanWorker(QObject):
+    """Escanea top folders de un drive en background."""
+    progress = Signal(str)
+    finished = Signal(object)  # {label, results}
+
+    def __init__(self, mount: str, label: str):
+        super().__init__()
+        self.mount = mount
+        self.label = label
 
     def run(self):
         try:
-            procs = performance.list_processes(min_memory_mb=30)
+            results = disk_analyzer.top_folders(
+                self.mount, top_n=25,
+                on_progress=lambda m: self.progress.emit(m))
+        except Exception as e:
+            self.progress.emit(f"Error: {e}")
+            results = []
+        self.finished.emit({"label": self.label, "results": results})
+
+
+class ProcessListWorker(QObject):
+    """Escanea procesos y los agrupa por nombre en background."""
+    finished = Signal(object)  # list[dict] — grupos
+
+    def run(self):
+        try:
+            groups = performance.list_processes_grouped(min_memory_mb=50)
         except Exception:
-            procs = []
-        self.finished.emit(procs)
+            groups = []
+        self.finished.emit(groups)
 
 
 # ============================================================
@@ -933,13 +964,17 @@ class ScrimOverlay(QWidget):
 
 
 class ProcessRow(QFrame):
-    """Fila de un proceso en la sección Rendimiento."""
-    action_requested = Signal(int, str)  # (pid, action) — action: 'suspend' | 'resume' | 'kill'
+    """
+    Fila de un GRUPO de procesos (Chrome, Dropbox, VS Code suelen ser N procesos).
+    Suspender/Reanudar/Cerrar actúa sobre TODOS los PIDs del grupo.
+    """
+    # Emite (list de pids, acción). Acción: 'suspend' | 'resume' | 'kill'
+    action_requested = Signal(object, str)
 
-    def __init__(self, proc: dict):
+    def __init__(self, group: dict):
         super().__init__()
         self.setObjectName("category-row")
-        self.proc = proc
+        self.group = group
 
         h = QHBoxLayout(self)
         h.setContentsMargins(Spacing.LG, Spacing.MD, Spacing.LG, Spacing.MD)
@@ -952,42 +987,53 @@ class ProcessRow(QFrame):
 
         col = QVBoxLayout()
         col.setSpacing(2)
-        name = QLabel(proc["name"])
+        title = group["name"]
+        if group["count"] > 1:
+            title += f"  ({group['count']} procesos)"
+        name = QLabel(title)
         name.setObjectName("row-name")
-        parts = [f"PID {proc['pid']}"]
-        if proc.get("cpu_pct", 0) > 0:
-            parts.append(f"{proc['cpu_pct']:.0f}% CPU")
-        if proc.get("is_suspended"):
+        parts = []
+        if group.get("cpu_pct", 0) > 0.5:
+            parts.append(f"{group['cpu_pct']:.0f}% CPU")
+        if group.get("all_suspended"):
             parts.append("SUSPENDIDO")
+        elif group.get("any_suspended"):
+            parts.append("Parcialmente suspendido")
+        parts.append("PIDs: " + ", ".join(str(p) for p in group["pids"][:6]) +
+                    ("…" if len(group["pids"]) > 6 else ""))
         desc = QLabel("  ·  ".join(parts))
         desc.setObjectName("row-desc")
+        desc.setWordWrap(True)
         col.addWidget(name)
         col.addWidget(desc)
         h.addLayout(col, stretch=1)
 
-        mem = QLabel(f"{proc['memory_mb']:.0f} MB")
+        mem = QLabel(f"{group['memory_mb']:.0f} MB")
         mem.setObjectName("row-size")
-        mem.setMinimumWidth(80)
+        mem.setMinimumWidth(90)
         mem.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         h.addWidget(mem)
 
-        if proc.get("is_suspended"):
+        if group.get("all_suspended"):
             resume_btn = QPushButton("Reanudar")
             resume_btn.setProperty("role", "positive")
-            resume_btn.clicked.connect(lambda: self.action_requested.emit(proc["pid"], "resume"))
+            resume_btn.clicked.connect(
+                lambda: self.action_requested.emit(group["pids"], "resume"))
             h.addWidget(resume_btn)
         else:
             susp_btn = QPushButton("Suspender")
             susp_btn.setProperty("role", "secondary")
-            susp_btn.clicked.connect(lambda: self.action_requested.emit(proc["pid"], "suspend"))
+            susp_btn.clicked.connect(
+                lambda: self.action_requested.emit(group["pids"], "suspend"))
             h.addWidget(susp_btn)
 
         kill_btn = QPushButton("Cerrar")
         kill_btn.setProperty("role", "destructive")
-        kill_btn.clicked.connect(lambda: self.action_requested.emit(proc["pid"], "kill"))
+        kill_btn.clicked.connect(
+            lambda: self.action_requested.emit(group["pids"], "kill"))
         h.addWidget(kill_btn)
 
-        self.setMinimumHeight(64)
+        self.setMinimumHeight(72)
 
 
 class OutdatedPackageRow(QFrame):
@@ -1395,6 +1441,7 @@ class MainWindow(QMainWindow):
         self.page_stats = self._build_stats_page()
         self.page_permissions = self._build_permissions_page()
         self.page_performance = self._build_performance_page()
+        self.page_disk = self._build_disk_analyzer_page()
         self.perf_rows = []  # inicializar
         self.stack.addWidget(self.page_dashboard)     # 0
         self.stack.addWidget(self.page_categories)    # 1
@@ -1407,6 +1454,7 @@ class MainWindow(QMainWindow):
         self.stack.addWidget(self.page_stats)         # 8
         self.stack.addWidget(self.page_permissions)   # 9
         self.stack.addWidget(self.page_performance)   # 10
+        self.stack.addWidget(self.page_disk)          # 11
         v.addWidget(self.stack, stretch=1)
 
         # Footer
@@ -1612,6 +1660,93 @@ class MainWindow(QMainWindow):
         self.updater_layout.addStretch(1)
         page.setWidget(content)
         return page
+
+    def _build_disk_analyzer_page(self) -> QWidget:
+        page = QScrollArea()
+        page.setObjectName("detail-scroll")
+        page.setWidgetResizable(True)
+        page.setFrameShape(QFrame.NoFrame)
+        content = QWidget()
+        self.disk_layout = QVBoxLayout(content)
+        self.disk_layout.setContentsMargins(Spacing.XXL, 0, Spacing.XXL, Spacing.XL)
+        self.disk_layout.setSpacing(Spacing.LG)
+
+        # Cards por disco (se generan dinámicamente al entrar a la sección)
+        self.disk_cards_container = QVBoxLayout()
+        self.disk_cards_container.setSpacing(Spacing.MD)
+        self.disk_layout.addLayout(self.disk_cards_container)
+
+        # Resultados del último scan (folder rankings)
+        self.disk_results_title = QLabel("")
+        self.disk_results_title.setProperty("role", "h3")
+        self.disk_results_title.setVisible(False)
+        self.disk_layout.addWidget(self.disk_results_title)
+
+        self.disk_results_layout = QVBoxLayout()
+        self.disk_results_layout.setSpacing(Spacing.XS)
+        self.disk_layout.addLayout(self.disk_results_layout)
+
+        self.disk_layout.addStretch(1)
+        page.setWidget(content)
+        return page
+
+    def _populate_disk_cards(self):
+        """Al entrar a la sección, poblar las cards con los discos actuales."""
+        # Limpiar
+        while self.disk_cards_container.count():
+            it = self.disk_cards_container.takeAt(0)
+            if it.widget():
+                it.widget().setParent(None)
+        for d in list_all_disks():
+            card = QFrame()
+            card.setObjectName("category-row")
+            cv = QVBoxLayout(card)
+            cv.setContentsMargins(Spacing.XL, Spacing.LG, Spacing.XL, Spacing.LG)
+            cv.setSpacing(Spacing.SM)
+
+            # Header: nombre + tamaños
+            head = QHBoxLayout()
+            title = QLabel(f"Disco {d['label']}")
+            title.setProperty("role", "h3")
+            head.addWidget(title)
+            head.addStretch(1)
+            sizes = QLabel(
+                f"{human_bytes(d['used'])} usados de {human_bytes(d['total'])}  ·  "
+                f"{human_bytes(d['free'])} libres")
+            sizes.setObjectName("row-desc")
+            head.addWidget(sizes)
+            cv.addLayout(head)
+
+            # Barra visual de uso
+            bar = QFrame()
+            bar.setFixedHeight(10)
+            bl = QHBoxLayout(bar)
+            bl.setContentsMargins(0, 0, 0, 0)
+            bl.setSpacing(0)
+            pct_used = d['used'] / max(1, d['total'])
+            fill_color = ("#34C759" if pct_used < 0.7
+                          else "#FF9500" if pct_used < 0.9
+                          else "#FF3B30")
+            fill = QFrame()
+            fill.setStyleSheet(f"background: {fill_color}; border-radius: 5px;")
+            spacer = QFrame()
+            spacer.setStyleSheet(f"background: {Colors.BORDER_DARK if is_dark_mode() else Colors.BORDER_LIGHT}; border-radius: 5px;")
+            bl.addWidget(fill, stretch=max(1, int(pct_used * 1000)))
+            bl.addWidget(spacer, stretch=max(1, int((1 - pct_used) * 1000)))
+            cv.addWidget(bar)
+
+            # Botón analizar
+            btn_row = QHBoxLayout()
+            btn_row.addStretch(1)
+            btn = QPushButton(f"Analizar disco {d['label']}")
+            btn.setProperty("role", "positive")
+            mount = d["mount"]
+            btn.clicked.connect(lambda checked=False, m=mount, lbl=d['label']:
+                                self.start_disk_scan(m, lbl))
+            btn_row.addWidget(btn)
+            cv.addLayout(btn_row)
+
+            self.disk_cards_container.addWidget(card)
 
     def _build_performance_page(self) -> QWidget:
         page = QScrollArea()
@@ -2040,6 +2175,11 @@ class MainWindow(QMainWindow):
             self.stack.setCurrentIndex(10)
             self.action_button.setText("Buscar procesos")
             self.footer.setVisible(False)
+        elif section == "Analizador de disco":
+            self.stack.setCurrentIndex(11)
+            self.action_button.setVisible(False)
+            self.footer.setVisible(False)
+            self._populate_disk_cards()
         self._update_footer()
 
     def _apply_category_filter(self, group: str):
@@ -2058,8 +2198,8 @@ class MainWindow(QMainWindow):
         re-escanear.
         """
         section = section or self.current_section
-        # Estadísticas y Permisos nunca tienen botón de acción arriba
-        if section in ("Estadísticas", "Permisos"):
+        # Estadísticas, Permisos y Analizador nunca tienen botón de acción arriba
+        if section in ("Estadísticas", "Permisos", "Analizador de disco"):
             self.action_button.setVisible(False)
             return
         empty_when_no_data = {
@@ -3167,6 +3307,103 @@ class MainWindow(QMainWindow):
         # Actualizar sidebar con indicador clickeable de nueva versión
         self.storage_bar.show_update(result["version"], result.get("url", ""))
 
+    # ---- Analizador de disco ----
+
+    def start_disk_scan(self, mount: str, label: str):
+        # Limpiar resultados previos
+        while self.disk_results_layout.count():
+            it = self.disk_results_layout.takeAt(0)
+            if it.widget():
+                it.widget().setParent(None)
+        self.disk_results_title.setVisible(False)
+
+        self.overlay.show_over()
+        self.progress_dialog = ProgressDialog(
+            f"Analizando disco {label}…", parent=self,
+            spinner_color=Colors.SUCCESS_DARK if is_dark_mode() else Colors.SUCCESS)
+        self.progress_dialog.set_detail(
+            "Puede tardar varios minutos según el tamaño del disco.")
+        self.progress_dialog.show()
+
+        self._disk_scan_cancelled = False
+        self.thread = QThread()
+        self.worker = _DiskScanWorker(mount, label)
+        self.worker.moveToThread(self.thread)
+        self.thread.started.connect(self.worker.run)
+        self.worker.progress.connect(
+            lambda m: self.progress_dialog.set_detail(m) if self.progress_dialog else None)
+        self.worker.finished.connect(self._on_disk_scan_done)
+        self.worker.finished.connect(self.thread.quit)
+        self.worker.finished.connect(self.worker.deleteLater)
+        self.thread.finished.connect(self.thread.deleteLater)
+        self.thread.start()
+
+    def _on_disk_scan_done(self, result):
+        if self.progress_dialog:
+            self.progress_dialog.close()
+            self.progress_dialog = None
+        self.overlay.hide()
+
+        results = result.get("results", [])
+        label = result.get("label", "?")
+        self.disk_results_title.setText(
+            f"Top carpetas del disco {label} — {len(results)} entradas")
+        self.disk_results_title.setVisible(True)
+
+        if not results:
+            empty = QLabel("No se pudo escanear el disco (sin permisos o vacío).")
+            empty.setObjectName("row-desc")
+            self.disk_results_layout.addWidget(empty)
+            return
+
+        max_size = max((r["size"] for r in results), default=1)
+        total_scanned = sum(r["size"] for r in results)
+        for r in results:
+            row = QFrame()
+            row.setObjectName("category-row")
+            h = QHBoxLayout(row)
+            h.setContentsMargins(Spacing.LG, Spacing.MD, Spacing.LG, Spacing.MD)
+            h.setSpacing(Spacing.MD)
+
+            icon_lbl = QLabel()
+            icon_lbl.setPixmap(make_icon_pixmap(
+                "hard-drive" if r["kind"] == "file" else "box",
+                size=18, color=icon_color()))
+            icon_lbl.setFixedSize(24, 24)
+            h.addWidget(icon_lbl)
+
+            name = QLabel(r["name"])
+            name.setObjectName("row-name")
+            name.setToolTip(str(r["path"]))
+            h.addWidget(name)
+
+            # Barra proporcional
+            bar_wrap = QFrame()
+            bar_wrap.setFixedHeight(6)
+            bl = QHBoxLayout(bar_wrap)
+            bl.setContentsMargins(0, 0, 0, 0)
+            bl.setSpacing(0)
+            fill = QFrame()
+            fill.setStyleSheet(
+                f"background: {Colors.SUCCESS_DARK if is_dark_mode() else Colors.SUCCESS};"
+                " border-radius: 3px;")
+            spacer_w = QWidget()
+            bl.addWidget(fill, stretch=max(1, int(r["size"] * 100 / max_size)))
+            bl.addWidget(spacer_w, stretch=max(1, int((max_size - r["size"]) * 100 / max_size)))
+            h.addWidget(bar_wrap, stretch=1)
+
+            size_lbl = QLabel(human_bytes(r["size"]))
+            size_lbl.setObjectName("row-size")
+            size_lbl.setMinimumWidth(80)
+            size_lbl.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            h.addWidget(size_lbl)
+
+            self.disk_results_layout.addWidget(row)
+
+        self.statusBar().showMessage(
+            f"Disco {label}: escaneadas {len(results)} entradas, "
+            f"total {human_bytes(total_scanned)}.")
+
     # ---- Rendimiento (suspender procesos) ----
 
     def start_perf_scan(self):
@@ -3236,18 +3473,18 @@ class MainWindow(QMainWindow):
             f"{len(procs)} procesos consumiendo {total_mb:.0f} MB de RAM en total.")
         self._refresh_action_button_visibility()
 
-    def _on_perf_action(self, pid: int, action: str):
-        ok = False
+    def _on_perf_action(self, pids, action: str):
+        """Acciona sobre TODOS los PIDs del grupo (ej. las 11 pestañas de Chrome)."""
         if action == "suspend":
-            ok = performance.suspend(pid)
+            count = performance.suspend_all(pids)
         elif action == "resume":
-            ok = performance.resume(pid)
+            count = performance.resume_all(pids)
         elif action == "kill":
-            ok = performance.kill(pid)
-        if not ok:
-            self.statusBar().showMessage(
-                f"No se pudo {action} PID {pid} (proceso protegido o sin permisos).")
-        # Re-escanear para refrescar
+            count = performance.kill_all(pids)
+        else:
+            count = 0
+        self.statusBar().showMessage(
+            f"{action}: {count}/{len(pids)} procesos afectados.")
         self.start_perf_scan()
 
     # ---- Helpers ----
