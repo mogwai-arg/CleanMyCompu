@@ -141,8 +141,7 @@ SECTIONS = [
      "desc": "Cachés y archivos de sistema de Windows que suelen ocupar decenas de GB. Requiere permisos de administrador (una ventana UAC).",
      "platform": "win"},
     {"key": "Escaneo de Users", "icon": "hard-drive", "menu_group": "HERRAMIENTAS",
-     "desc": "Papelera, instaladores viejos, backups de iPhone, crash dumps, Windows.old y screenshots antiguos — los grandes ocultos en tu carpeta de usuario.",
-     "platform": "win"},
+     "desc": "Papelera, instaladores viejos, backups de iPhone, crash dumps y screenshots antiguos — los grandes ocultos en tu carpeta de usuario."},
     {"key": "Actualizador", "icon": "download", "menu_group": "HERRAMIENTAS",
      "desc": "Verifica y actualiza apps y paquetes instalados via Homebrew.",
      "platform": "darwin"},
@@ -212,10 +211,10 @@ ONBOARDING = {
     ),
     "Escaneo de Users": (
         "Los grandes ocultos en tu carpeta de usuario",
-        "Escaneo tu carpeta Users buscando: papelera de reciclaje (todas las unidades), "
-        "instaladores viejos en Descargas, backups de iPhone/iPad, Windows.old, crash "
-        "dumps y screenshots antiguos. Cada uno tiene su botón para revisar o borrar directo. "
-        "Algunas ops necesitan permisos de admin (una ventana UAC).",
+        "Escaneo tu carpeta de usuario buscando: papelera / Trash (todas las unidades), "
+        "instaladores viejos en Descargas (.exe/.msi/.dmg/.pkg/.zip), backups de iPhone/iPad "
+        "(iTunes o Finder), crash dumps y screenshots antiguos. En Windows también busca "
+        "Windows.old. Cada uno tiene su botón para revisar o borrar directo.",
     ),
     "Limpieza Windows": (
         "Espacio grande escondido en Windows",
