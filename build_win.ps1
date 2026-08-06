@@ -117,93 +117,131 @@ function Invoke-Silent {
     param([string]$exe, [string[]]$argList, [string]$phase, [bool]$marquee=$false)
     Add-Log "> $phase"
 
-    # Convertir path relativo a absoluto (Start-Process es puntilloso con esto)
+    # Convertir path relativo a absoluto
     if (-not [System.IO.Path]::IsPathRooted($exe)) {
         $absExe = Join-Path $PSScriptRoot $exe
         if (Test-Path $absExe) {
             $exe = $absExe
         }
     }
+    if (-not (Test-Path $exe)) {
+        Add-Log "! ERROR: no existe el ejecutable: $exe"
+        return 998
+    }
     Add-Log "  exe: $exe"
     Add-Log "  args: $($argList -join ' ')"
 
-    # Barra en modo indeterminado durante ops largas (PyInstaller tarda minutos sin imprimir)
     if ($marquee) {
         $script:progress.Style = "Marquee"
         $script:progress.MarqueeAnimationSpeed = 30
     }
 
-    # Redirigir stdout/stderr a archivos temporales (evita bloqueo en ReadLine)
     $outFile = [System.IO.Path]::GetTempFileName()
     $errFile = [System.IO.Path]::GetTempFileName()
 
     try {
-        $p = Start-Process -FilePath $exe -ArgumentList $argList `
-            -NoNewWindow -PassThru `
-            -WorkingDirectory $PSScriptRoot `
-            -RedirectStandardOutput $outFile `
-            -RedirectStandardError $errFile
+        # Uso .NET Process directo para tener control total sobre ExitCode.
+        # (Start-Process -PassThru tiene bugs conocidos con ExitCode.)
+        $psi = New-Object System.Diagnostics.ProcessStartInfo
+        $psi.FileName = $exe
+        # Buildear Arguments string con quoting adecuado
+        $quoted = @()
+        foreach ($a in $argList) {
+            if ($a -match '\s' -and $a -notmatch '^".*"$') {
+                $quoted += '"' + $a + '"'
+            } else {
+                $quoted += $a
+            }
+        }
+        $psi.Arguments = $quoted -join " "
+        $psi.RedirectStandardOutput = $true
+        $psi.RedirectStandardError = $true
+        $psi.UseShellExecute = $false
+        $psi.CreateNoWindow = $true
+        $psi.WorkingDirectory = $PSScriptRoot
+
+        $p = New-Object System.Diagnostics.Process
+        $p.StartInfo = $psi
+
+        # Buffers para output async (evita deadlock)
+        $script:outBuf = New-Object System.Text.StringBuilder
+        $script:errBuf = New-Object System.Text.StringBuilder
+
+        $outAction = {
+            if (-not [string]::IsNullOrEmpty($EventArgs.Data)) {
+                [void]$Event.MessageData.AppendLine($EventArgs.Data)
+            }
+        }
+
+        $subOut = Register-ObjectEvent -InputObject $p -EventName OutputDataReceived `
+            -MessageData $script:outBuf -Action $outAction
+        $subErr = Register-ObjectEvent -InputObject $p -EventName ErrorDataReceived `
+            -MessageData $script:errBuf -Action $outAction
+
+        $started = $p.Start()
+        if (-not $started) {
+            Add-Log "! No se pudo iniciar el proceso"
+            Unregister-Event -SourceIdentifier $subOut.Name
+            Unregister-Event -SourceIdentifier $subErr.Name
+            if ($marquee) { $script:progress.Style = "Continuous" }
+            return 997
+        }
+        $p.BeginOutputReadLine()
+        $p.BeginErrorReadLine()
     } catch {
-        Add-Log "! Excepcion lanzando proceso: $_"
+        Add-Log "! Excepcion lanzando proceso: $($_.Exception.Message)"
         Remove-Item $outFile, $errFile -Force -ErrorAction SilentlyContinue
         if ($marquee) { $script:progress.Style = "Continuous" }
         return 999
     }
 
-    $lastOutSize = 0
-    $lastErrSize = 0
-
+    # Polling loop — mantiene UI viva y va escribiendo output al log
+    $lastOutLen = 0
+    $lastErrLen = 0
     while (-not $p.HasExited) {
-        # Leer stdout incrementalmente
-        try {
-            $curSize = (Get-Item $outFile -ErrorAction SilentlyContinue).Length
-            if ($curSize -and $curSize -gt $lastOutSize) {
-                $fs = [System.IO.File]::Open($outFile, "Open", "Read", "ReadWrite")
-                $fs.Seek($lastOutSize, "Begin") | Out-Null
-                $reader = New-Object System.IO.StreamReader($fs)
-                $newContent = $reader.ReadToEnd()
-                $reader.Close(); $fs.Close()
-                foreach ($l in $newContent -split "`r?`n") {
-                    if ($l.Trim()) { Add-Log $l.TrimEnd() }
-                }
-                $lastOutSize = $curSize
-            }
-            # Leer stderr incrementalmente
-            $curErr = (Get-Item $errFile -ErrorAction SilentlyContinue).Length
-            if ($curErr -and $curErr -gt $lastErrSize) {
-                $fs = [System.IO.File]::Open($errFile, "Open", "Read", "ReadWrite")
-                $fs.Seek($lastErrSize, "Begin") | Out-Null
-                $reader = New-Object System.IO.StreamReader($fs)
-                $newContent = $reader.ReadToEnd()
-                $reader.Close(); $fs.Close()
-                foreach ($l in $newContent -split "`r?`n") {
-                    if ($l.Trim()) { Add-Log ("! " + $l.TrimEnd()) }
-                }
-                $lastErrSize = $curErr
-            }
-        } catch { }
-
-        [System.Windows.Forms.Application]::DoEvents()
-        Start-Sleep -Milliseconds 200
-    }
-
-    # Drenar lo que quede
-    Start-Sleep -Milliseconds 300
-    try {
-        if ((Get-Item $outFile -ErrorAction SilentlyContinue).Length -gt $lastOutSize) {
-            $tail = Get-Content $outFile -Raw -ErrorAction SilentlyContinue
-            $newPart = $tail.Substring($lastOutSize)
-            foreach ($l in $newPart -split "`r?`n") {
+        $outText = $script:outBuf.ToString()
+        if ($outText.Length -gt $lastOutLen) {
+            $newContent = $outText.Substring($lastOutLen)
+            foreach ($l in $newContent -split "`r?`n") {
                 if ($l.Trim()) { Add-Log $l.TrimEnd() }
             }
+            $lastOutLen = $outText.Length
         }
-        $errTail = Get-Content $errFile -Raw -ErrorAction SilentlyContinue
-        if ($errTail -and $errTail.Length -gt $lastErrSize) {
-            $newErrPart = $errTail.Substring($lastErrSize)
-            foreach ($l in $newErrPart -split "`r?`n") {
+        $errText = $script:errBuf.ToString()
+        if ($errText.Length -gt $lastErrLen) {
+            $newContent = $errText.Substring($lastErrLen)
+            foreach ($l in $newContent -split "`r?`n") {
                 if ($l.Trim()) { Add-Log ("! " + $l.TrimEnd()) }
             }
+            $lastErrLen = $errText.Length
         }
+        [System.Windows.Forms.Application]::DoEvents()
+        Start-Sleep -Milliseconds 150
+    }
+
+    # CRITICO: forzar sincronizacion final para poblar ExitCode correctamente
+    $p.WaitForExit()
+
+    # Drenar cualquier output que quedo en los buffers
+    Start-Sleep -Milliseconds 300
+    [System.Windows.Forms.Application]::DoEvents()
+    $outText = $script:outBuf.ToString()
+    if ($outText.Length -gt $lastOutLen) {
+        foreach ($l in $outText.Substring($lastOutLen) -split "`r?`n") {
+            if ($l.Trim()) { Add-Log $l.TrimEnd() }
+        }
+    }
+    $errText = $script:errBuf.ToString()
+    if ($errText.Length -gt $lastErrLen) {
+        foreach ($l in $errText.Substring($lastErrLen) -split "`r?`n") {
+            if ($l.Trim()) { Add-Log ("! " + $l.TrimEnd()) }
+        }
+    }
+
+    # Cleanup event subscribers
+    try {
+        Unregister-Event -SourceIdentifier $subOut.Name -ErrorAction SilentlyContinue
+        Unregister-Event -SourceIdentifier $subErr.Name -ErrorAction SilentlyContinue
     } catch { }
 
     Remove-Item $outFile, $errFile -Force -ErrorAction SilentlyContinue
@@ -212,8 +250,9 @@ function Invoke-Silent {
         $script:progress.Style = "Continuous"
     }
 
-    Add-Log "  exit code: $($p.ExitCode)"
-    return $p.ExitCode
+    $rc = $p.ExitCode
+    Add-Log "  exit code: $rc"
+    return $rc
 }
 
 function Run-Build {
