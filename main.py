@@ -34,8 +34,10 @@ import software_updater
 import updater
 import stats
 import permissions
+import performance
 from confetti import Confetti
 from notifications import notify
+from platform_helpers import is_windows, is_mac
 from PySide6.QtCore import QTimer
 
 
@@ -123,14 +125,25 @@ SECTIONS = [
      "desc": "Archivos de más de 100 MB que no abrís hace 6+ meses. Revisá antes de borrar."},
     {"key": "Elementos de inicio", "icon": "power", "menu_group": "HERRAMIENTAS",
      "desc": "Agentes de inicio del usuario que se ejecutan al arrancar la compu."},
+    {"key": "Rendimiento", "icon": "cpu", "menu_group": "HERRAMIENTAS",
+     "desc": "Suspender apps que consumen RAM para liberar memoria virtual sin cerrarlas."},
     {"key": "Actualizador", "icon": "download", "menu_group": "HERRAMIENTAS",
-     "desc": "Verifica y actualiza apps y paquetes instalados via Homebrew."},
+     "desc": "Verifica y actualiza apps y paquetes instalados via Homebrew.",
+     "platform": "darwin"},
     {"key": "Memoria", "icon": "cpu", "menu_group": "HERRAMIENTAS",
-     "desc": "Libera RAM inactiva de macOS con un clic. Útil si sentís la Mac lenta."},
+     "desc": "Libera RAM inactiva de macOS con un clic. Útil si sentís la Mac lenta.",
+     "platform": "darwin"},
     {"key": "Estadísticas", "icon": "clock", "menu_group": "HERRAMIENTAS",
      "desc": "Mira cuánto espacio liberaste con CleanMyCompu a lo largo del tiempo."},
     {"key": "Permisos", "icon": "info", "menu_group": "HERRAMIENTAS",
-     "desc": "Configurá el acceso al disco para que macOS no vuelva a preguntar en cada carpeta."},
+     "desc": "Configurá el acceso al disco para que macOS no vuelva a preguntar en cada carpeta.",
+     "platform": "darwin"},
+]
+
+# Filtrar por plataforma actual — items sin campo 'platform' están en ambos
+SECTIONS = [
+    s for s in SECTIONS
+    if not s.get("platform") or s["platform"] == sys.platform.rstrip("32")
 ]
 
 SECTIONS_BY_KEY = {s["key"]: s for s in SECTIONS}
@@ -208,6 +221,13 @@ ONBOARDING = {
         "¿Cansado de que macOS pida permiso por cada carpeta?",
         "Con un clic te llevo al panel donde le podés dar 'Acceso completo al disco' "
         "a CleanMyCompu. Después de eso, macOS deja de preguntar y los scans son mucho más rápidos.",
+    ),
+    "Rendimiento": (
+        "Liberá memoria suspendiendo apps",
+        "Lista los procesos que más RAM están consumiendo. Podés SUSPENDERLOS "
+        "(pausar temporalmente sin cerrarlos, sin perder trabajo) para liberar "
+        "memoria virtual cuando la compu se queda lenta. Después los reanudás "
+        "cuando quieras y vuelven a donde estaban.",
     ),
 }
 
@@ -376,6 +396,18 @@ class UpdateCheckWorker(QObject):
 
     def run(self):
         self.finished.emit(updater.check_for_update())
+
+
+class ProcessListWorker(QObject):
+    """Escanea procesos en background (list_processes puede tardar 1-2s)."""
+    finished = Signal(object)  # list[dict]
+
+    def run(self):
+        try:
+            procs = performance.list_processes(min_memory_mb=30)
+        except Exception:
+            procs = []
+        self.finished.emit(procs)
 
 
 # ============================================================
@@ -900,6 +932,64 @@ class ScrimOverlay(QWidget):
         self.show()
 
 
+class ProcessRow(QFrame):
+    """Fila de un proceso en la sección Rendimiento."""
+    action_requested = Signal(int, str)  # (pid, action) — action: 'suspend' | 'resume' | 'kill'
+
+    def __init__(self, proc: dict):
+        super().__init__()
+        self.setObjectName("category-row")
+        self.proc = proc
+
+        h = QHBoxLayout(self)
+        h.setContentsMargins(Spacing.LG, Spacing.MD, Spacing.LG, Spacing.MD)
+        h.setSpacing(Spacing.LG)
+
+        icon_lbl = QLabel()
+        icon_lbl.setPixmap(make_icon_pixmap("cpu", size=22, color=icon_color()))
+        icon_lbl.setFixedSize(28, 28)
+        h.addWidget(icon_lbl)
+
+        col = QVBoxLayout()
+        col.setSpacing(2)
+        name = QLabel(proc["name"])
+        name.setObjectName("row-name")
+        parts = [f"PID {proc['pid']}"]
+        if proc.get("cpu_pct", 0) > 0:
+            parts.append(f"{proc['cpu_pct']:.0f}% CPU")
+        if proc.get("is_suspended"):
+            parts.append("SUSPENDIDO")
+        desc = QLabel("  ·  ".join(parts))
+        desc.setObjectName("row-desc")
+        col.addWidget(name)
+        col.addWidget(desc)
+        h.addLayout(col, stretch=1)
+
+        mem = QLabel(f"{proc['memory_mb']:.0f} MB")
+        mem.setObjectName("row-size")
+        mem.setMinimumWidth(80)
+        mem.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        h.addWidget(mem)
+
+        if proc.get("is_suspended"):
+            resume_btn = QPushButton("Reanudar")
+            resume_btn.setProperty("role", "positive")
+            resume_btn.clicked.connect(lambda: self.action_requested.emit(proc["pid"], "resume"))
+            h.addWidget(resume_btn)
+        else:
+            susp_btn = QPushButton("Suspender")
+            susp_btn.setProperty("role", "secondary")
+            susp_btn.clicked.connect(lambda: self.action_requested.emit(proc["pid"], "suspend"))
+            h.addWidget(susp_btn)
+
+        kill_btn = QPushButton("Cerrar")
+        kill_btn.setProperty("role", "destructive")
+        kill_btn.clicked.connect(lambda: self.action_requested.emit(proc["pid"], "kill"))
+        h.addWidget(kill_btn)
+
+        self.setMinimumHeight(64)
+
+
 class OutdatedPackageRow(QFrame):
     """Fila de un paquete Homebrew con update disponible."""
     changed = Signal()
@@ -1304,6 +1394,8 @@ class MainWindow(QMainWindow):
         self.page_memory = self._build_memory_page()
         self.page_stats = self._build_stats_page()
         self.page_permissions = self._build_permissions_page()
+        self.page_performance = self._build_performance_page()
+        self.perf_rows = []  # inicializar
         self.stack.addWidget(self.page_dashboard)     # 0
         self.stack.addWidget(self.page_categories)    # 1
         self.stack.addWidget(self.page_duplicates)    # 2
@@ -1314,6 +1406,7 @@ class MainWindow(QMainWindow):
         self.stack.addWidget(self.page_memory)        # 7
         self.stack.addWidget(self.page_stats)         # 8
         self.stack.addWidget(self.page_permissions)   # 9
+        self.stack.addWidget(self.page_performance)   # 10
         v.addWidget(self.stack, stretch=1)
 
         # Footer
@@ -1517,6 +1610,44 @@ class MainWindow(QMainWindow):
         )
         self.updater_layout.addWidget(self.updater_empty)
         self.updater_layout.addStretch(1)
+        page.setWidget(content)
+        return page
+
+    def _build_performance_page(self) -> QWidget:
+        page = QScrollArea()
+        page.setObjectName("detail-scroll")
+        page.setWidgetResizable(True)
+        page.setFrameShape(QFrame.NoFrame)
+        content = QWidget()
+        self.perf_layout = QVBoxLayout(content)
+        self.perf_layout.setContentsMargins(Spacing.XXL, 0, Spacing.XXL, Spacing.XL)
+        self.perf_layout.setSpacing(Spacing.SM)
+
+        # Card de estado de RAM del sistema (se refresca al escanear)
+        self.perf_memory_card = QFrame()
+        self.perf_memory_card.setObjectName("category-row")
+        pmv = QVBoxLayout(self.perf_memory_card)
+        pmv.setContentsMargins(Spacing.XL, Spacing.LG, Spacing.XL, Spacing.LG)
+        self.perf_memory_title = QLabel("Estado de la memoria RAM")
+        self.perf_memory_title.setObjectName("row-name")
+        self.perf_memory_text = QLabel("Presioná 'Buscar procesos' para ver el estado actual.")
+        self.perf_memory_text.setObjectName("row-desc")
+        self.perf_memory_text.setWordWrap(True)
+        pmv.addWidget(self.perf_memory_title)
+        pmv.addWidget(self.perf_memory_text)
+        self.perf_layout.addWidget(self.perf_memory_card)
+
+        self.perf_empty = EmptyState(
+            icon_name="cpu",
+            title="Recuperá memoria virtual",
+            body="Escaneo las apps que más RAM están consumiendo. Podés "
+                 "SUSPENDERLAS (sin cerrarlas, sin perder datos) para liberar "
+                 "memoria virtual al toque. Después las reanudás cuando quieras.",
+            action_label="Buscar procesos",
+            action_callback=lambda: self.start_perf_scan(),
+        )
+        self.perf_layout.addWidget(self.perf_empty)
+        self.perf_layout.addStretch(1)
         page.setWidget(content)
         return page
 
@@ -1905,6 +2036,10 @@ class MainWindow(QMainWindow):
             self.stack.setCurrentIndex(9)
             self.action_button.setVisible(False)
             self.footer.setVisible(False)
+        elif section == "Rendimiento":
+            self.stack.setCurrentIndex(10)
+            self.action_button.setText("Buscar procesos")
+            self.footer.setVisible(False)
         self._update_footer()
 
     def _apply_category_filter(self, group: str):
@@ -1932,6 +2067,7 @@ class MainWindow(QMainWindow):
             "Desinstalador": lambda: not self.app_rows,
             "Archivos grandes": lambda: not self.large_rows,
             "Actualizador": lambda: not getattr(self, "updater_rows", []),
+            "Rendimiento": lambda: not getattr(self, "perf_rows", []),
         }
         check = empty_when_no_data.get(section)
         should_hide = check() if check else False
@@ -1953,6 +2089,8 @@ class MainWindow(QMainWindow):
             self.start_scan_updates()
         elif s == "Memoria":
             self.free_memory()
+        elif s == "Rendimiento":
+            self.start_perf_scan()
 
     # ---- Escaneo de categorías ----
 
@@ -2659,6 +2797,14 @@ class MainWindow(QMainWindow):
                    f"{len(files)} archivos ocupando {human_bytes(total)}.",
                    subtitle="CleanMyCompu")
 
+    def _refresh_large_empty_state(self):
+        """Si no quedan filas, volver a mostrar el empty state."""
+        if not self.large_rows:
+            self.large_empty.set_body(
+                "No hay más archivos grandes. Buscá de nuevo para ver el estado actual.")
+            self.large_empty.setVisible(True)
+            self._refresh_action_button_visibility()
+
     def start_large_clean(self):
         selected = [lr for lr in self.large_rows if lr.is_selected()]
         if not selected:
@@ -2691,6 +2837,7 @@ class MainWindow(QMainWindow):
         self.overlay.hide()
         self.storage_bar.refresh()
         self._update_footer()
+        self._refresh_large_empty_state()
         stats.record("Archivos grandes", freed, items=len(selected))
         if freed > 0:
             self._celebrate()
@@ -2763,17 +2910,26 @@ class MainWindow(QMainWindow):
 
     def _on_startup_toggled(self, item: dict, enable: bool):
         try:
-            new_path = startup_items.toggle_launch_agent(item["path"], enable)
-            item["path"] = new_path
+            # En Mac pasamos el path, en Windows pasamos el item entero.
+            # El wrapper dispatch en startup_items.py acepta ambos.
+            arg = item if is_windows() else item.get("path")
+            result = startup_items.toggle_launch_agent(arg, enable)
+            if result is False:
+                self.statusBar().showMessage(
+                    "No se pudo cambiar el estado. Puede requerir permisos de admin.")
+                return
             item["enabled"] = enable
-            # Recargar la fila entera
             self._load_startup_items()
         except Exception as e:
             self.statusBar().showMessage(f"No se pudo cambiar: {e}")
 
     def _on_startup_removed(self, item: dict):
-        if startup_items.remove_launch_agent(item["path"]):
+        arg = item if is_windows() else item.get("path")
+        if startup_items.remove_launch_agent(arg):
             self._load_startup_items()
+        else:
+            self.statusBar().showMessage(
+                "No se pudo quitar el item. Puede requerir permisos de admin.")
 
     # ---- Actualizador (Homebrew) ----
 
@@ -3010,6 +3166,89 @@ class MainWindow(QMainWindow):
                subtitle=f"Tenés v{result['current']}")
         # Actualizar sidebar con indicador clickeable de nueva versión
         self.storage_bar.show_update(result["version"], result.get("url", ""))
+
+    # ---- Rendimiento (suspender procesos) ----
+
+    def start_perf_scan(self):
+        if not performance.is_available():
+            InfoDialog(
+                title="psutil no está instalado",
+                body="La sección Rendimiento necesita la librería 'psutil'. "
+                     "Instalá con: pip install psutil",
+                icon_name="alert-triangle", icon_color=Colors.WARNING, parent=self,
+            ).exec()
+            return
+
+        for r in self.perf_rows:
+            r.setParent(None)
+        self.perf_rows = []
+        self.perf_empty.setVisible(False)
+
+        self.overlay.show_over()
+        self.progress_dialog = ProgressDialog("Buscando procesos…", parent=self)
+        self.progress_dialog.show()
+
+        self.thread = QThread()
+        self.worker = ProcessListWorker()
+        self.worker.moveToThread(self.thread)
+        self.thread.started.connect(self.worker.run)
+        self.worker.finished.connect(self._on_perf_scan_done)
+        self.worker.finished.connect(self.thread.quit)
+        self.worker.finished.connect(self.worker.deleteLater)
+        self.thread.finished.connect(self.thread.deleteLater)
+        self.thread.start()
+
+    def _on_perf_scan_done(self, procs):
+        if self.progress_dialog:
+            self.progress_dialog.close()
+            self.progress_dialog = None
+        self.overlay.hide()
+
+        # Actualizar card de memoria
+        mem = performance.get_memory_info()
+        if mem["total"] > 0:
+            pct = mem.get("percent", (mem["used"] / mem["total"]) * 100)
+            self.perf_memory_text.setText(
+                f"En uso: {human_bytes(mem['used'])} de {human_bytes(mem['total'])} "
+                f"({pct:.0f}%)  ·  Libre: {human_bytes(mem['free'])}"
+            )
+
+        if not procs:
+            self.perf_empty.set_body(
+                "No se detectaron procesos con más de 30 MB de RAM. "
+                "(O psutil no tiene permisos suficientes.)")
+            self.perf_empty.setVisible(True)
+            self._refresh_action_button_visibility()
+            return
+
+        # Insertar filas ANTES del stretch (índice = count - 1 después del empty)
+        insert_at = self.perf_layout.indexOf(self.perf_empty)
+        if insert_at < 0:
+            insert_at = self.perf_layout.count() - 1
+        for proc in procs[:100]:
+            row = ProcessRow(proc)
+            row.action_requested.connect(self._on_perf_action)
+            self.perf_layout.insertWidget(insert_at, row)
+            self.perf_rows.append(row)
+            insert_at += 1
+        total_mb = performance.total_memory_used_by_processes(procs)
+        self.statusBar().showMessage(
+            f"{len(procs)} procesos consumiendo {total_mb:.0f} MB de RAM en total.")
+        self._refresh_action_button_visibility()
+
+    def _on_perf_action(self, pid: int, action: str):
+        ok = False
+        if action == "suspend":
+            ok = performance.suspend(pid)
+        elif action == "resume":
+            ok = performance.resume(pid)
+        elif action == "kill":
+            ok = performance.kill(pid)
+        if not ok:
+            self.statusBar().showMessage(
+                f"No se pudo {action} PID {pid} (proceso protegido o sin permisos).")
+        # Re-escanear para refrescar
+        self.start_perf_scan()
 
     # ---- Helpers ----
 

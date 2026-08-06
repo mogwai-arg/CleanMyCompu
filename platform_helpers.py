@@ -76,16 +76,89 @@ def user_music() -> Path:
     return HOME / "Music"
 
 
+def list_data_drives() -> list:
+    """
+    Windows: lista todas las unidades FIJAS distintas de C: (D:, E:, etc.)
+    macOS/Linux: lista vacía (todo está bajo /).
+    """
+    if not is_windows():
+        return []
+    try:
+        import ctypes
+        import string
+        drives = []
+        # GetLogicalDrives devuelve un bitmask con cada letra disponible
+        bitmask = ctypes.windll.kernel32.GetLogicalDrives()
+        for i, letter in enumerate(string.ascii_uppercase):
+            if not (bitmask & (1 << i)):
+                continue
+            if letter == "C":
+                continue  # C: ya se scannea via user folders
+            # Verificar que sea drive fijo (no CD, no USB temporal)
+            drive_type = ctypes.windll.kernel32.GetDriveTypeW(f"{letter}:\\")
+            # 3 = DRIVE_FIXED, 4 = DRIVE_REMOTE (network), otros = skip
+            if drive_type == 3:
+                p = Path(f"{letter}:\\")
+                if p.exists():
+                    drives.append(p)
+        return drives
+    except Exception:
+        return []
+
+
 def default_duplicate_roots() -> list:
     """Carpetas por default a escanear buscando duplicados."""
-    return [user_downloads(), user_documents(), user_desktop(),
-            user_pictures(), user_videos()]
+    roots = [user_downloads(), user_documents(), user_desktop(),
+             user_pictures(), user_videos()]
+    # En Windows, sumar unidades adicionales (D:, E:, etc.)
+    roots.extend(list_data_drives())
+    return roots
 
 
 def default_large_file_roots() -> list:
     """Carpetas por default a escanear buscando archivos grandes."""
-    return [user_downloads(), user_documents(), user_desktop(),
-            user_pictures(), user_videos()]
+    roots = [user_downloads(), user_documents(), user_desktop(),
+             user_pictures(), user_videos()]
+    roots.extend(list_data_drives())
+    return roots
+
+
+def list_all_disks() -> list:
+    """
+    Todas las unidades fijas con espacio total/libre.
+    Útil para el widget StorageBar en Windows para mostrar disk info agregada.
+    Devuelve lista de dicts: {mount, total, used, free, label}
+    """
+    import shutil as _sh
+    disks = []
+    if is_windows():
+        try:
+            import ctypes
+            import string
+            bitmask = ctypes.windll.kernel32.GetLogicalDrives()
+            for i, letter in enumerate(string.ascii_uppercase):
+                if not (bitmask & (1 << i)):
+                    continue
+                mount = f"{letter}:\\"
+                drive_type = ctypes.windll.kernel32.GetDriveTypeW(mount)
+                if drive_type != 3:  # solo drives fijos
+                    continue
+                try:
+                    total, used, free = _sh.disk_usage(mount)
+                    disks.append({"mount": mount, "total": total,
+                                  "used": used, "free": free, "label": letter})
+                except OSError:
+                    pass
+        except Exception:
+            pass
+    else:
+        try:
+            total, used, free = _sh.disk_usage("/")
+            disks.append({"mount": "/", "total": total, "used": used,
+                          "free": free, "label": "/"})
+        except OSError:
+            pass
+    return disks
 
 
 def platform_display() -> str:

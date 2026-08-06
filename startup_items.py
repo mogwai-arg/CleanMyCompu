@@ -230,10 +230,15 @@ def _read_plist(path: Path) -> Optional[dict]:
 
 def list_launch_agents() -> List[dict]:
     """
-    Devuelve la lista de LaunchAgents del usuario, enriquecida con:
-      friendly_name, friendly_desc, recommend ("disable"|None), reason
-    Ordenada: recomendados-a-desactivar primero, luego por nombre.
+    Devuelve la lista de elementos de inicio del usuario.
+    En macOS: LaunchAgents en ~/Library/LaunchAgents.
+    En Windows: registry Run keys + Startup folder (via startup_items_windows).
     """
+    import sys
+    if sys.platform.startswith("win"):
+        from startup_items_windows import list_startup
+        return list_startup()
+
     items: List[dict] = []
     if not LAUNCH_AGENTS_DIR.exists():
         return items
@@ -299,7 +304,12 @@ def list_launch_agents() -> List[dict]:
     return items
 
 
-def toggle_launch_agent(path: Path, enable: bool) -> Path:
+def toggle_launch_agent(path, enable: bool):
+    """Dispatch por plataforma. En Windows recibe un dict, en Mac un Path."""
+    import sys
+    if sys.platform.startswith("win"):
+        from startup_items_windows import toggle
+        return toggle(path, enable)
     p = Path(path)
     if enable and p.name.endswith(".plist.disabled"):
         new = p.with_name(p.name[: -len(".disabled")])
@@ -312,7 +322,12 @@ def toggle_launch_agent(path: Path, enable: bool) -> Path:
     return p
 
 
-def remove_launch_agent(path: Path) -> bool:
+def remove_launch_agent(path) -> bool:
+    """Dispatch por plataforma."""
+    import sys
+    if sys.platform.startswith("win"):
+        from startup_items_windows import remove
+        return remove(path)
     try:
         from send2trash import send2trash
         send2trash(str(path))

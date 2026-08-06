@@ -20,7 +20,7 @@ if not exist .venv (
 
 echo Instalando dependencias...
 call .venv\Scripts\pip.exe install --quiet --upgrade pip
-call .venv\Scripts\pip.exe install --quiet PySide6 send2trash pyinstaller
+call .venv\Scripts\pip.exe install --quiet PySide6 send2trash psutil pyinstaller
 
 if not exist assets\AppIcon.ico (
     echo Generando icono...
