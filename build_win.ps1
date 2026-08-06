@@ -230,14 +230,30 @@ function Run-Build {
         }
         Set-Progress 15 "Entorno virtual OK."
 
+        # Verificar que pip.exe existe realmente
+        $pipExe = Join-Path $PSScriptRoot ".venv\Scripts\pip.exe"
+        if (-not (Test-Path $pipExe)) {
+            Add-Log "ERROR: no existe $pipExe"
+            Add-Log "El entorno virtual esta corrupto. Borra la carpeta .venv y corre de nuevo."
+            Set-Progress 100 "Fallo: .venv corrupto (borra la carpeta .venv y reinicia)"
+            return $false
+        }
+        Add-Log "OK: pip.exe existe en $pipExe"
+
         Set-Progress 20 "Actualizando pip..."
-        Invoke-Silent ".venv\Scripts\pip.exe" @("install", "--quiet", "--upgrade", "pip") "pip upgrade" | Out-Null
+        # SIN --quiet para ver output real
+        Invoke-Silent ".venv\Scripts\python.exe" @("-m", "pip", "install", "--upgrade", "pip") "pip upgrade" | Out-Null
 
         Set-Progress 30 "Instalando dependencias (PySide6, psutil, pyinstaller, send2trash)..."
-        $rc = Invoke-Silent ".venv\Scripts\pip.exe" @("install", "--quiet", "PySide6", "send2trash", "psutil", "pyinstaller") "pip install deps"
+        Add-Log "Esto puede tardar 2-5 minutos bajando ~50 MB. Aguantame..."
+        # SIN --quiet + usando python -m pip por si pip.exe tiene problemas
+        $rc = Invoke-Silent ".venv\Scripts\python.exe" @("-m", "pip", "install", "PySide6", "send2trash", "psutil", "pyinstaller") "pip install deps" $true
         if ($rc -ne 0) {
-            Add-Log "ERROR: fallo pip install."
-            Set-Progress 100 "Fallo: no se pudieron instalar dependencias"
+            Add-Log "ERROR: pip install fallo con exit code $rc."
+            Add-Log "Mira las lineas de arriba: si aparece 'Could not find' es problema de red/version."
+            Add-Log "Si aparece 'permission denied', corre el .bat como administrador."
+            Add-Log "Si nada aparece, probablemente el .venv esta roto: borra la carpeta .venv y probar de nuevo."
+            Set-Progress 100 "Fallo: pip install (ver detalle arriba)"
             return $false
         }
         Set-Progress 45 "Dependencias listas."
