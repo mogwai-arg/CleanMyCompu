@@ -274,8 +274,17 @@ def run_operations(op_ids: List[str], progress_cb=None) -> Tuple[bool, str]:
         cmd_ps = op["ps_command"]
         lines.append(f'"[BEGIN] {name_ps}" | Out-File -Append -FilePath $logFile -Encoding utf8')
         lines.append("try {")
-        # Comando real
-        lines.append(f"    {cmd_ps}")
+        # Ejecuto el comando dentro de una scriptblock y capturo TODO su output
+        # (stdout, warning, verbose, error) para escribirlo al log.
+        # Sin esto, Write-Output y similares van a consola oculta y se pierden.
+        lines.append("    $capturedOutput = & {")
+        lines.append(f"        {cmd_ps}")
+        lines.append("    } 2>&1")
+        lines.append("    if ($capturedOutput) {")
+        lines.append("        foreach ($line in $capturedOutput) {")
+        lines.append('            "  " + $line.ToString() | Out-File -Append -FilePath $logFile -Encoding utf8')
+        lines.append("        }")
+        lines.append("    }")
         lines.append(f'    "[OK] {name_ps} — comando terminó sin excepciones" | Out-File -Append -FilePath $logFile -Encoding utf8')
         lines.append("} catch {")
         lines.append(f'    "[FAIL] {name_ps} — $($_.Exception.Message)" | Out-File -Append -FilePath $logFile -Encoding utf8')

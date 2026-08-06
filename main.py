@@ -2261,6 +2261,14 @@ class MainWindow(QMainWindow):
         self.winclean_progress.setVisible(True)
         QApplication.processEvents()
 
+        # Medir espacio libre del disco C: (para detectar delta real que no aparece
+        # midiendo carpetas — ej: WinSxS con hardlinks engaña)
+        import shutil as _sh_mod
+        try:
+            disk_free_before = _sh_mod.disk_usage("C:\\").free
+        except Exception:
+            disk_free_before = 0
+
         sizes_before = {}
         for r in selected:
             op_full = next((o for o in windows_deep_clean.OPERATIONS
@@ -2306,6 +2314,34 @@ class MainWindow(QMainWindow):
             details_lines.append(
                 f"{status} {r.op['name']}: {human_bytes(before)} → "
                 f"{human_bytes(after)}   (liberó {human_bytes(delta)})"
+            )
+
+        # Medir espacio libre del disco DESPUÉS. Si el disco creció más que
+        # lo que medimos por carpetas, el delta viene de operaciones cuyo tamaño
+        # nuestro estimador no ve (típicamente WinSxS con hardlinks).
+        try:
+            disk_free_after = _sh_mod.disk_usage("C:\\").free
+        except Exception:
+            disk_free_after = disk_free_before
+        disk_delta = disk_free_after - disk_free_before
+        details_lines.append("")
+        details_lines.append(
+            f"📊 Espacio libre en C: {human_bytes(disk_free_before)} → "
+            f"{human_bytes(disk_free_after)}   (delta real de disco: "
+            f"{'+' if disk_delta >= 0 else ''}{human_bytes(abs(disk_delta))})"
+        )
+        # Si el disco liberó más que nuestro cálculo por carpetas, usar ese número
+        if disk_delta > real_freed:
+            details_lines.append(
+                f"   → El delta de disco es MAYOR que el medido por carpetas — "
+                "eso significa que operaciones como WinSxS (que usan hardlinks) "
+                "liberaron espacio real que no aparece midiendo tamaños de carpetas."
+            )
+            real_freed = disk_delta
+        elif disk_delta < 0:
+            details_lines.append(
+                "   ⚠️ El disco tiene MENOS espacio libre que antes. Alguna otra app "
+                "escribió archivos mientras corría la limpieza — el número no es fiable."
             )
 
         self.winclean_progress.setVisible(False)
