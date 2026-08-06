@@ -39,6 +39,7 @@ import permissions
 import performance
 import disk_analyzer
 import app_analyzer
+import windows_deep_clean
 from confetti import Confetti
 from notifications import notify
 from platform_helpers import is_windows, is_mac, list_all_disks
@@ -135,6 +136,9 @@ SECTIONS = [
      "desc": "Ver qué carpetas ocupan más espacio en tus discos — para entender de dónde vienen esos GB llenos."},
     {"key": "Análisis inteligente", "icon": "sparkles", "menu_group": "HERRAMIENTAS",
      "desc": "Identifica apps en AppData (CapCut, DaVinci, Discord...) y te dice qué es seguro borrar sin romper nada."},
+    {"key": "Limpieza Windows", "icon": "sparkles", "menu_group": "HERRAMIENTAS",
+     "desc": "Cachés y archivos de sistema de Windows que suelen ocupar decenas de GB. Requiere permisos de administrador (una ventana UAC).",
+     "platform": "win"},
     {"key": "Actualizador", "icon": "download", "menu_group": "HERRAMIENTAS",
      "desc": "Verifica y actualiza apps y paquetes instalados via Homebrew.",
      "platform": "darwin"},
@@ -201,6 +205,14 @@ ONBOARDING = {
         "Archivos grandes olvidados",
         "Muestra archivos de +100 MB que no abrís hace 6+ meses. Los checkboxes vienen sin marcar "
         "porque acá tenés que revisar uno por uno: puede haber cosas importantes.",
+    ),
+    "Limpieza Windows": (
+        "Espacio grande escondido en Windows",
+        "Estas son las 6 limpiezas del sistema Windows que más liberan: caché de "
+        "Windows Update, Temp del sistema, Prefetch, Delivery Optimization, hibernación "
+        "y Component Store (WinSxS). Todas son operaciones oficiales de Microsoft. "
+        "Marcá lo que quieras limpiar y clic en 'Ejecutar' — vas a ver UNA ventana UAC "
+        "pidiendo permisos. Aceptá y se limpia todo de una.",
     ),
     "Elementos de inicio": (
         "Programas que arrancan con tu compu",
@@ -860,6 +872,78 @@ class LargeFileRow(QFrame):
         h.addWidget(self.checkbox)
 
         self.setMinimumHeight(64)
+
+    def is_selected(self) -> bool:
+        return self.checkbox.isChecked()
+
+
+class WindowsCleanRow(QFrame):
+    """Fila de una operación de Limpieza Windows: check + nombre + safety badge + size."""
+    changed = Signal()
+
+    def __init__(self, op: dict):
+        super().__init__()
+        self.setObjectName("category-row")
+        self.op = op
+
+        h = QHBoxLayout(self)
+        h.setContentsMargins(Spacing.LG, Spacing.MD, Spacing.LG, Spacing.MD)
+        h.setSpacing(Spacing.LG)
+
+        icon_lbl = QLabel()
+        icon_lbl.setPixmap(make_icon_pixmap("sparkles", size=22, color=icon_color()))
+        icon_lbl.setFixedSize(28, 28)
+        h.addWidget(icon_lbl)
+
+        col = QVBoxLayout()
+        col.setSpacing(4)
+        # Título + badge de seguridad al lado
+        name_row = QHBoxLayout()
+        name_row.setSpacing(Spacing.SM)
+        name = QLabel(op["name"])
+        name.setObjectName("row-name")
+        name_row.addWidget(name)
+        if op["safety"] == "caution":
+            badge = QLabel("REVISAR ANTES")
+            badge.setObjectName("badge-caution")
+            badge.setStyleSheet(
+                f"background: {Colors.WARNING}; color: white; "
+                f"padding: 2px 8px; border-radius: 8px; font-size: 10px; font-weight: 600;"
+            )
+            name_row.addWidget(badge)
+        else:
+            badge = QLabel("SEGURO")
+            badge.setObjectName("badge-safe")
+            badge.setStyleSheet(
+                f"background: {Colors.SUCCESS}; color: white; "
+                f"padding: 2px 8px; border-radius: 8px; font-size: 10px; font-weight: 600;"
+            )
+            name_row.addWidget(badge)
+        name_row.addStretch(1)
+        col.addLayout(name_row)
+
+        desc = QLabel(op["desc"])
+        desc.setObjectName("row-desc")
+        desc.setWordWrap(True)
+        col.addWidget(desc)
+        h.addLayout(col, stretch=1)
+
+        size_txt = human_bytes(op["size"]) if op["size"] > 0 else "—"
+        if op["size_approx"] and op["size"] > 0:
+            size_txt = "~" + size_txt
+        size = QLabel(size_txt)
+        size.setObjectName("row-size")
+        size.setMinimumWidth(90)
+        size.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        h.addWidget(size)
+
+        self.checkbox = QCheckBox()
+        # Marcamos por defecto las 'safe'; las 'caution' quedan opt-in
+        self.checkbox.setChecked(op["safety"] == "safe" and op["size"] > 0)
+        self.checkbox.stateChanged.connect(lambda _: self.changed.emit())
+        h.addWidget(self.checkbox)
+
+        self.setMinimumHeight(72)
 
     def is_selected(self) -> bool:
         return self.checkbox.isChecked()
@@ -1628,6 +1712,7 @@ class MainWindow(QMainWindow):
         self.page_performance = self._build_performance_page()
         self.page_disk = self._build_disk_analyzer_page()
         self.page_smart = self._build_smart_app_page()
+        self.page_windows_clean = self._build_windows_clean_page()
         self.perf_rows = []  # inicializar
         self.stack.addWidget(self.page_dashboard)     # 0
         self.stack.addWidget(self.page_categories)    # 1
@@ -1642,6 +1727,7 @@ class MainWindow(QMainWindow):
         self.stack.addWidget(self.page_performance)   # 10
         self.stack.addWidget(self.page_disk)          # 11
         self.stack.addWidget(self.page_smart)         # 12
+        self.stack.addWidget(self.page_windows_clean) # 13
         v.addWidget(self.stack, stretch=1)
 
         # Footer
@@ -1917,6 +2003,147 @@ class MainWindow(QMainWindow):
         self.smart_rows = []
         page.setWidget(content)
         return page
+
+    def _build_windows_clean_page(self) -> QWidget:
+        page = QScrollArea()
+        page.setObjectName("detail-scroll")
+        page.setWidgetResizable(True)
+        page.setFrameShape(QFrame.NoFrame)
+        content = QWidget()
+        self.winclean_layout = QVBoxLayout(content)
+        self.winclean_layout.setContentsMargins(Spacing.XXL, 0, Spacing.XXL, Spacing.XL)
+        self.winclean_layout.setSpacing(Spacing.SM)
+
+        self.winclean_progress = ProgressBanner(cancellable=False)
+        self.winclean_progress.setVisible(False)
+        self.winclean_layout.addWidget(self.winclean_progress)
+
+        self.winclean_empty = EmptyState(
+            icon_name="sparkles",
+            title="Limpieza avanzada de Windows",
+            body="Calculo tamaños de cachés y archivos del sistema. Marcá lo que quieras "
+                 "limpiar y clic en 'Ejecutar limpieza'. Windows te va a pedir permisos "
+                 "de administrador (UAC) una sola vez.",
+            action_label="Calcular tamaños",
+            action_callback=lambda: self.start_windows_clean_scan(),
+        )
+        self.winclean_layout.addWidget(self.winclean_empty)
+
+        # Botón grande "Ejecutar limpieza" (aparece solo cuando hay filas)
+        self.winclean_run_btn = QPushButton("Ejecutar limpieza seleccionada")
+        self.winclean_run_btn.setProperty("role", "destructive")
+        self.winclean_run_btn.setMinimumHeight(48)
+        self.winclean_run_btn.setVisible(False)
+        self.winclean_run_btn.clicked.connect(self._on_run_windows_clean)
+        self.winclean_layout.addWidget(self.winclean_run_btn)
+
+        self.winclean_layout.addStretch(1)
+
+        self.winclean_rows = []
+        page.setWidget(content)
+        return page
+
+    def start_windows_clean_scan(self):
+        """Calcula tamaños de cada op y pobla filas."""
+        # Limpiar filas previas
+        for r in self.winclean_rows:
+            r.setParent(None)
+        self.winclean_rows = []
+        self.winclean_empty.setVisible(False)
+        self.winclean_run_btn.setVisible(False)
+
+        self.winclean_progress.set_title("Calculando tamaños…")
+        self.winclean_progress.set_detail(
+            "Midiendo cachés y archivos del sistema. Puede tardar unos segundos."
+        )
+        self.winclean_progress.setVisible(True)
+        QApplication.processEvents()
+
+        try:
+            ops = windows_deep_clean.estimate_all()
+        except Exception as e:
+            self.winclean_progress.setVisible(False)
+            self.winclean_empty.set_body(f"No se pudo calcular: {e}")
+            self.winclean_empty.setVisible(True)
+            return
+
+        self.winclean_progress.setVisible(False)
+
+        # Insertar filas antes del botón (posición -2 = antes de btn y stretch)
+        insert_at = self.winclean_layout.count() - 2
+        for op in ops:
+            row = WindowsCleanRow(op)
+            row.changed.connect(self._update_windows_clean_totals)
+            self.winclean_layout.insertWidget(insert_at, row)
+            self.winclean_rows.append(row)
+            insert_at += 1
+
+        self.winclean_run_btn.setVisible(True)
+        self._update_windows_clean_totals()
+
+    def _update_windows_clean_totals(self):
+        total = sum(r.op["size"] for r in self.winclean_rows if r.is_selected())
+        any_selected = any(r.is_selected() for r in self.winclean_rows)
+        if any_selected:
+            self.winclean_run_btn.setText(
+                f"Ejecutar limpieza — ~{human_bytes(total)}"
+            )
+            self.winclean_run_btn.setEnabled(True)
+        else:
+            self.winclean_run_btn.setText("Seleccioná al menos una limpieza")
+            self.winclean_run_btn.setEnabled(False)
+
+    def _on_run_windows_clean(self):
+        selected = [r for r in self.winclean_rows if r.is_selected()]
+        if not selected:
+            return
+        op_ids = [r.op["id"] for r in selected]
+        total = sum(r.op["size"] for r in selected)
+        any_caution = any(r.op["safety"] == "caution" for r in selected)
+
+        # Confirmación
+        confirm_items = [{"name": r.op["name"], "icon": "sparkles",
+                          "bytes": r.op["size"]} for r in selected]
+        dlg = ConfirmCleanDialog(confirm_items, total, parent=self)
+        dlg.setWindowTitle("Confirmar limpieza avanzada")
+        if dlg.exec() != QDialog.Accepted:
+            return
+
+        # Ejecutar (bloqueante — el UAC se maneja solo, y las ops son rápidas
+        # salvo dism que puede tardar bastante)
+        self.winclean_progress.set_title("Ejecutando limpieza…")
+        self.winclean_progress.set_detail(
+            "Windows te va a pedir permisos de administrador (UAC). "
+            "Aceptá el prompt. Si incluiste 'Component Store', puede tardar 10-30 min."
+        )
+        self.winclean_progress.setVisible(True)
+        QApplication.processEvents()
+
+        success, msg = windows_deep_clean.run_operations(op_ids)
+
+        self.winclean_progress.setVisible(False)
+
+        if success:
+            stats.record("Limpieza Windows", total)
+            self.storage_bar.refresh()
+            self._celebrate()
+            InfoDialog(
+                title=f"Limpieza completada",
+                body=f"Se ejecutaron {len(selected)} operaciones. Estimación: "
+                     f"~{human_bytes(total)} liberados. Recargá los tamaños para ver "
+                     "el resultado real.",
+                icon_name="check-circle", icon_color=Colors.SUCCESS, parent=self,
+            ).exec()
+            # Re-escanear para mostrar los tamaños actualizados
+            self.start_windows_clean_scan()
+        else:
+            InfoDialog(
+                title="No se completó",
+                body=msg or "La operación se canceló o falló. Si rechazaste el prompt "
+                            "UAC, aceptalo la próxima vez. Si el problema persiste, "
+                            "probá una operación por vez.",
+                icon_name="alert-triangle", icon_color=Colors.WARNING, parent=self,
+            ).exec()
 
     def _build_disk_analyzer_page(self) -> QWidget:
         page = QScrollArea()
@@ -2524,6 +2751,14 @@ class MainWindow(QMainWindow):
             self.stack.setCurrentIndex(12)
             self.action_button.setText("Analizar apps")
             self.footer.setVisible(False)
+        elif section == "Limpieza Windows":
+            self.stack.setCurrentIndex(13)
+            self.action_button.setVisible(True)
+            self.action_button.setText("Recalcular tamaños")
+            self.footer.setVisible(False)
+            # Auto-cargar la primera vez
+            if not getattr(self, "winclean_rows", []):
+                self.start_windows_clean_scan()
         self._update_footer()
 
     def _apply_category_filter(self, group: str):
@@ -2578,6 +2813,8 @@ class MainWindow(QMainWindow):
             self.start_perf_scan()
         elif s == "Análisis inteligente":
             self.start_smart_scan()
+        elif s == "Limpieza Windows":
+            self.start_windows_clean_scan()
 
     # ---- Escaneo de categorías ----
 
