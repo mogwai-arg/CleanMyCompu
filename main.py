@@ -24,7 +24,8 @@ from scanner import scan_category, get_paths_for_category
 from cleaner import clean_paths
 from ui_theme import Spacing, Type, Colors, build_stylesheet, is_dark_mode
 from dialogs import (ConfirmCleanDialog, ConfirmDialog, DriveSelectorDialog,
-                     InfoDialog, ProgressDialog, RunningProcessesDialog)
+                     InfoDialog, ProgressBanner, ProgressDialog,
+                     RunningProcessesDialog)
 from icons import make_icon_pixmap, make_logo_pixmap
 import duplicates
 import uninstaller
@@ -1593,6 +1594,11 @@ class MainWindow(QMainWindow):
         ])
         self.dup_sort.sort_changed.connect(self._sort_dup_rows)
         self.dup_layout.addWidget(self.dup_sort)
+
+        # Banner de progreso INLINE (no bloquea la vista de resultados)
+        self.dup_progress = ProgressBanner(cancellable=True)
+        self.dup_progress.setVisible(False)
+        self.dup_layout.addWidget(self.dup_progress)
         self.dup_empty = EmptyState(
             icon_name="copy",
             title="Encontrá archivos duplicados",
@@ -2688,13 +2694,12 @@ class MainWindow(QMainWindow):
         self.dup_rows = []
         self.dup_empty.setVisible(False)
 
-        # 3) Progress dialog CON botón cancelar
-        self.overlay.show_over()
-        self.progress_dialog = ProgressDialog(
-            "Buscando duplicados…", parent=self, cancellable=True)
-        self.progress_dialog.set_detail(
-            "Los duplicados aparecen abajo a medida que los encuentro.")
-        self.progress_dialog.show()
+        # 3) Banner INLINE de progreso — NO modal (para ver resultados en vivo)
+        self.dup_progress.set_title("Buscando duplicados…")
+        self.dup_progress.set_detail("Los duplicados aparecen abajo a medida que los encuentro.")
+        self.dup_progress.cancel_btn.setEnabled(True)
+        self.dup_progress.cancel_btn.setText("Cancelar")
+        self.dup_progress.setVisible(True)
 
         # 4) Worker con streaming
         self.thread = QThread()
@@ -2702,14 +2707,14 @@ class MainWindow(QMainWindow):
         self.worker.moveToThread(self.thread)
         self.thread.started.connect(self.worker.run)
         self.worker.progress.connect(
-            lambda m: self.progress_dialog.set_detail(m) if self.progress_dialog else None)
+            lambda m: self.dup_progress.set_detail(m))
         self.worker.group_found.connect(self._on_dup_group_found)
         self.worker.finished.connect(self._on_dup_scan_done)
         self.worker.finished.connect(self.thread.quit)
         self.worker.finished.connect(self.worker.deleteLater)
         self.thread.finished.connect(self.thread.deleteLater)
         # Botón cancelar activa el flag del worker
-        self.progress_dialog.cancelled.connect(self.worker.cancel)
+        self.dup_progress.cancelled.connect(self.worker.cancel)
         self.thread.start()
 
     def _on_dup_group_found(self, group):
@@ -2731,10 +2736,8 @@ class MainWindow(QMainWindow):
 
     def _on_dup_scan_done(self, groups):
         # groups puede tener items ya renderizados via streaming — usamos los que hay
-        if self.progress_dialog:
-            self.progress_dialog.close()
-            self.progress_dialog = None
-        self.overlay.hide()
+        self.dup_progress.setVisible(False)
+        self.dup_progress.stop()
         self.action_button.setEnabled(True)
         self._refresh_action_button_visibility()
 

@@ -581,6 +581,71 @@ class ProgressDialog(QDialog):
         super().close()
 
 
+class ProgressBanner(QFrame):
+    """
+    Banner de progreso INLINE (no modal). Se pone arriba de una lista de
+    resultados que se llena via streaming. Muestra spinner mini + texto +
+    botón cancelar (opcional). No bloquea la vista.
+    """
+    cancelled = Signal()
+
+    def __init__(self, cancellable: bool = True, parent=None):
+        super().__init__(parent)
+        self.setObjectName("category-row")
+
+        h = QHBoxLayout(self)
+        h.setContentsMargins(Spacing.LG, Spacing.MD, Spacing.LG, Spacing.MD)
+        h.setSpacing(Spacing.LG)
+
+        # Spinner circular chico (28px)
+        self.spinner = CircularSpinner(
+            size=28,
+            color=Colors.SUCCESS_DARK if is_dark_mode() else Colors.SUCCESS,
+        )
+        h.addWidget(self.spinner)
+
+        col = QVBoxLayout()
+        col.setSpacing(2)
+        self.title_lbl = QLabel("Trabajando…")
+        self.title_lbl.setObjectName("row-name")
+        self.detail_lbl = QLabel("")
+        self.detail_lbl.setObjectName("row-desc")
+        self.detail_lbl.setWordWrap(True)
+        col.addWidget(self.title_lbl)
+        col.addWidget(self.detail_lbl)
+        h.addLayout(col, stretch=1)
+
+        if cancellable:
+            self.cancel_btn = QPushButton("Cancelar")
+            self.cancel_btn.setProperty("role", "secondary")
+            self.cancel_btn.clicked.connect(self._on_cancel)
+            h.addWidget(self.cancel_btn)
+        else:
+            self.cancel_btn = None
+
+    def set_title(self, text: str):
+        self.title_lbl.setText(text)
+
+    def set_detail(self, text: str):
+        if len(text) > 100:
+            text = text[:48] + " … " + text[-48:]
+        self.detail_lbl.setText(text)
+
+    def _on_cancel(self):
+        if self.cancel_btn:
+            self.cancel_btn.setEnabled(False)
+            self.cancel_btn.setText("Cancelando…")
+        self.set_title("Cancelando…")
+        self.set_detail("Guardando lo encontrado hasta ahora.")
+        self.cancelled.emit()
+
+    def stop(self):
+        try:
+            self.spinner.stop()
+        except Exception:
+            pass
+
+
 class DriveSelectorDialog(QDialog):
     """
     Diálogo para elegir en qué carpetas/discos buscar antes de arrancar el scan.
