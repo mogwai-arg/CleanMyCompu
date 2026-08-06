@@ -27,11 +27,14 @@ echo "🔨 Construyendo CleanMyCompu.app..."
   --hidden-import PIL.WebPImagePlugin \
   --hidden-import PIL._imaging \
   --hidden-import imagehash \
+  --hidden-import numpy \
+  --collect-submodules numpy \
   --exclude-module scipy \
   --exclude-module scipy.special \
   --exclude-module matplotlib \
   --exclude-module pytest \
   --exclude-module notebook \
+  --exclude-module tests \
   --clean --noconfirm \
   main.py > /tmp/cleanmycompu-build.log 2>&1
 
