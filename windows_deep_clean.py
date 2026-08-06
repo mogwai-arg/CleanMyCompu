@@ -100,10 +100,13 @@ OPERATIONS = [
         "safety": "safe",
         "estimate_fn": estimate_wu_cache,
         "estimate_approx": False,
+        # -ErrorAction Stop hace que errores tiren excepcion y las veamos en el log
         "ps_command": (
-            "Stop-Service -Name wuauserv -Force -ErrorAction SilentlyContinue; "
-            f"Remove-Item -LiteralPath '{WINDIR}\\SoftwareDistribution\\Download\\*' "
-            "-Recurse -Force -ErrorAction SilentlyContinue; "
+            "Stop-Service -Name wuauserv -Force -ErrorAction Stop; "
+            "Start-Sleep -Seconds 2; "
+            f"Get-ChildItem -LiteralPath '{WINDIR}\\SoftwareDistribution\\Download' "
+            "-ErrorAction SilentlyContinue | "
+            "Remove-Item -Recurse -Force -ErrorAction Continue; "
             "Start-Service -Name wuauserv -ErrorAction SilentlyContinue"
         ),
     },
@@ -115,8 +118,8 @@ OPERATIONS = [
         "estimate_fn": estimate_temp,
         "estimate_approx": False,
         "ps_command": (
-            f"Remove-Item -LiteralPath '{WINDIR}\\Temp\\*' "
-            "-Recurse -Force -ErrorAction SilentlyContinue"
+            f"Get-ChildItem -LiteralPath '{WINDIR}\\Temp' -ErrorAction Stop | "
+            "Remove-Item -Recurse -Force -ErrorAction Continue"
         ),
     },
     {
@@ -128,8 +131,8 @@ OPERATIONS = [
         "estimate_fn": estimate_prefetch,
         "estimate_approx": False,
         "ps_command": (
-            f"Remove-Item -LiteralPath '{WINDIR}\\Prefetch\\*' "
-            "-Recurse -Force -ErrorAction SilentlyContinue"
+            f"Get-ChildItem -LiteralPath '{WINDIR}\\Prefetch' -ErrorAction Stop | "
+            "Remove-Item -Recurse -Force -ErrorAction Continue"
         ),
     },
     {
@@ -141,9 +144,11 @@ OPERATIONS = [
         "estimate_fn": estimate_delivery_opt,
         "estimate_approx": False,
         "ps_command": (
-            "Stop-Service -Name DoSvc -Force -ErrorAction SilentlyContinue; "
-            f"Remove-Item -LiteralPath '{WINDIR}\\SoftwareDistribution\\DeliveryOptimization\\*' "
-            "-Recurse -Force -ErrorAction SilentlyContinue; "
+            "Stop-Service -Name DoSvc -Force -ErrorAction Continue; "
+            "Start-Sleep -Seconds 2; "
+            f"Get-ChildItem -LiteralPath '{WINDIR}\\SoftwareDistribution\\DeliveryOptimization' "
+            "-ErrorAction SilentlyContinue | "
+            "Remove-Item -Recurse -Force -ErrorAction Continue; "
             "Start-Service -Name DoSvc -ErrorAction SilentlyContinue"
         ),
     },
@@ -157,7 +162,18 @@ OPERATIONS = [
         "safety": "caution",
         "estimate_fn": estimate_hiberfil,
         "estimate_approx": True,
-        "ps_command": "powercfg /hibernate off",
+        # powercfg no tira excepciones. Capturamos su output y chequeamos $LASTEXITCODE.
+        "ps_command": (
+            "$out = & powercfg /hibernate off 2>&1; "
+            "Write-Output \"powercfg exit: $LASTEXITCODE\"; "
+            "Write-Output \"powercfg output: $out\"; "
+            "if ($LASTEXITCODE -ne 0) { throw \"powercfg fallo con exit code $LASTEXITCODE\" }; "
+            # Verificar que hiberfil.sys efectivamente se borro
+            "Start-Sleep -Seconds 2; "
+            "if (Test-Path 'C:\\hiberfil.sys') { "
+            "  throw 'powercfg dijo OK pero hiberfil.sys sigue ahi (posible bloqueo por politica de dominio)' "
+            "} else { Write-Output 'OK: hiberfil.sys borrado' }"
+        ),
     },
     {
         "id": "component_store",
@@ -167,8 +183,13 @@ OPERATIONS = [
                 "de Windows ya instalados no podrán desinstalarse. Puede tardar 10-30 min.",
         "safety": "caution",
         "estimate_fn": estimate_component_store,
-        "estimate_approx": True,  # el tamaño real recuperable es menor por hard-links
-        "ps_command": "dism.exe /Online /Cleanup-Image /StartComponentCleanup /ResetBase",
+        "estimate_approx": True,
+        "ps_command": (
+            "$out = & dism.exe /Online /Cleanup-Image /StartComponentCleanup /ResetBase 2>&1; "
+            "Write-Output \"dism exit: $LASTEXITCODE\"; "
+            "Write-Output \"dism output (ultimas lineas): $($out | Select-Object -Last 5)\"; "
+            "if ($LASTEXITCODE -ne 0) { throw \"dism fallo con exit code $LASTEXITCODE\" }"
+        ),
     },
 ]
 
