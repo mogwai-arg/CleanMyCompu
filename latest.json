@@ -1,5 +1,5 @@
 {
-  "version": "1.2.0",
-  "url": "https://github.com/mogwai-arg/CleanMyCompu/releases/download/v1.2.0/CleanMyCompu.dmg",
-  "notes": "Primer Update!"
+  "version": "1.3.0",
+  "url": "https://github.com/mogwai-arg/CleanMyCompu/releases/download/v1.3.0/CleanMyCompu.dmg",
+  "notes": "Test del update checker: la /Applications app de v1.2.0 debería ver esta v1.3.0"
 }
