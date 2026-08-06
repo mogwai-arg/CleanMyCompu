@@ -117,6 +117,16 @@ function Invoke-Silent {
     param([string]$exe, [string[]]$argList, [string]$phase, [bool]$marquee=$false)
     Add-Log "> $phase"
 
+    # Convertir path relativo a absoluto (Start-Process es puntilloso con esto)
+    if (-not [System.IO.Path]::IsPathRooted($exe)) {
+        $absExe = Join-Path $PSScriptRoot $exe
+        if (Test-Path $absExe) {
+            $exe = $absExe
+        }
+    }
+    Add-Log "  exe: $exe"
+    Add-Log "  args: $($argList -join ' ')"
+
     # Barra en modo indeterminado durante ops largas (PyInstaller tarda minutos sin imprimir)
     if ($marquee) {
         $script:progress.Style = "Marquee"
@@ -127,10 +137,18 @@ function Invoke-Silent {
     $outFile = [System.IO.Path]::GetTempFileName()
     $errFile = [System.IO.Path]::GetTempFileName()
 
-    $p = Start-Process -FilePath $exe -ArgumentList $argList `
-        -NoNewWindow -PassThru `
-        -RedirectStandardOutput $outFile `
-        -RedirectStandardError $errFile
+    try {
+        $p = Start-Process -FilePath $exe -ArgumentList $argList `
+            -NoNewWindow -PassThru `
+            -WorkingDirectory $PSScriptRoot `
+            -RedirectStandardOutput $outFile `
+            -RedirectStandardError $errFile
+    } catch {
+        Add-Log "! Excepcion lanzando proceso: $_"
+        Remove-Item $outFile, $errFile -Force -ErrorAction SilentlyContinue
+        if ($marquee) { $script:progress.Style = "Continuous" }
+        return 999
+    }
 
     $lastOutSize = 0
     $lastErrSize = 0
@@ -194,6 +212,7 @@ function Invoke-Silent {
         $script:progress.Style = "Continuous"
     }
 
+    Add-Log "  exit code: $($p.ExitCode)"
     return $p.ExitCode
 }
 
