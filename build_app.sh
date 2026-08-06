@@ -4,6 +4,11 @@ set -e
 
 cd "$(dirname "$0")"
 
+# Asegurar que las deps de runtime esten instaladas antes de empaquetar
+echo "📦 Verificando dependencias runtime..."
+./.venv/bin/pip install --quiet \
+  PySide6 send2trash psutil pyinstaller imagehash Pillow requests
+
 echo "🔨 Construyendo CleanMyCompu.app..."
 ./.venv/bin/pyinstaller \
   --windowed \
@@ -11,6 +16,13 @@ echo "🔨 Construyendo CleanMyCompu.app..."
   --osx-bundle-identifier com.cleanmycompu.app \
   --icon assets/AppIcon.icns \
   --add-data "assets:assets" \
+  --collect-submodules PySide6 \
+  --collect-submodules psutil \
+  --collect-submodules PIL \
+  --collect-submodules imagehash \
+  --hidden-import PIL.Image \
+  --hidden-import PIL._imaging \
+  --hidden-import imagehash \
   --clean --noconfirm \
   main.py > /tmp/cleanmycompu-build.log 2>&1
 
