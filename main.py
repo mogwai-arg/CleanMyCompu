@@ -22,8 +22,8 @@ from targets import get_categories
 from scanner import scan_category, get_paths_for_category
 from cleaner import clean_paths
 from ui_theme import Spacing, Type, Colors, build_stylesheet, is_dark_mode
-from dialogs import (ConfirmCleanDialog, ConfirmDialog, InfoDialog,
-                     ProgressDialog, RunningProcessesDialog)
+from dialogs import (ConfirmCleanDialog, ConfirmDialog, DriveSelectorDialog,
+                     InfoDialog, ProgressDialog, RunningProcessesDialog)
 from icons import make_icon_pixmap, make_logo_pixmap
 import duplicates
 import uninstaller
@@ -332,12 +332,25 @@ class CleanWorker(QObject):
 
 class DuplicatesWorker(QObject):
     progress = Signal(str)
-    finished = Signal(object)
+    group_found = Signal(object)   # streaming: emite cada grupo confirmado
+    finished = Signal(object)      # todos los grupos al terminar
+
+    def __init__(self, roots=None):
+        super().__init__()
+        self.roots = roots
+        self.cancel_flag = duplicates.ScanCancel()
+
+    def cancel(self):
+        self.cancel_flag.cancel()
 
     def run(self):
         try:
             groups = duplicates.find_duplicates(
-                on_progress=lambda m: self.progress.emit(m))
+                roots=self.roots,
+                on_progress=lambda m: self.progress.emit(m),
+                on_group_found=lambda g: self.group_found.emit(g),
+                cancel=self.cancel_flag,
+            )
         except Exception as e:
             self.progress.emit(f"Error: {e}")
             groups = []
@@ -2470,7 +2483,52 @@ class MainWindow(QMainWindow):
 
     # ---- Duplicados ----
 
+    def _build_duplicates_root_options(self):
+        """Devuelve lista de opciones para el DriveSelectorDialog."""
+        from platform_helpers import (user_downloads, user_documents, user_desktop,
+                                      user_pictures, user_videos, list_data_drives)
+        opts = [
+            {"label": "Descargas", "path": user_downloads(), "default_checked": True},
+            {"label": "Documentos", "path": user_documents(), "default_checked": True},
+            {"label": "Escritorio", "path": user_desktop(), "default_checked": True},
+            {"label": "Imágenes", "path": user_pictures(), "default_checked": True},
+            {"label": "Videos", "path": user_videos(), "default_checked": True},
+        ]
+        # Filtrar los que no existen
+        opts = [o for o in opts if o["path"].exists()]
+        # Sumar discos data (D:, E:, etc.) — desmarcados por default porque
+        # pueden ser lentos y grandes
+        for drive in list_data_drives():
+            opts.append({
+                "label": f"Disco {drive.name.rstrip(chr(92))}",
+                "path": drive,
+                "default_checked": False,
+            })
+        return opts
+
     def start_duplicates_scan(self):
+        # 1) Selector de discos/carpetas
+        opts = self._build_duplicates_root_options()
+        if not opts:
+            InfoDialog(
+                title="No hay carpetas para escanear",
+                body="No se encontraron carpetas estándar (Descargas, Documentos, etc.).",
+                icon_name="alert-triangle", icon_color=Colors.WARNING, parent=self,
+            ).exec()
+            return
+        dlg = DriveSelectorDialog(
+            title="¿Dónde buscar duplicados?",
+            subtitle="Elegí las carpetas y discos donde querés escanear. "
+                     "Los discos extra pueden tardar mucho — marcá solo los que necesitás.",
+            roots=opts, parent=self,
+        )
+        if dlg.exec() != QDialog.Accepted:
+            return
+        selected_roots = dlg.selected_paths()
+        if not selected_roots:
+            return
+
+        # 2) Preparar estado
         self.action_button.setEnabled(False)
         self.clean_button.setEnabled(False)
         for dr in self.dup_rows:
@@ -2478,52 +2536,74 @@ class MainWindow(QMainWindow):
         self.dup_rows = []
         self.dup_empty.setVisible(False)
 
+        # 3) Progress dialog CON botón cancelar
         self.overlay.show_over()
-        self.progress_dialog = ProgressDialog("Buscando duplicados…", parent=self)
+        self.progress_dialog = ProgressDialog(
+            "Buscando duplicados…", parent=self, cancellable=True)
+        self.progress_dialog.set_detail(
+            "Los duplicados aparecen abajo a medida que los encuentro.")
         self.progress_dialog.show()
 
+        # 4) Worker con streaming
         self.thread = QThread()
-        self.worker = DuplicatesWorker()
+        self.worker = DuplicatesWorker(roots=selected_roots)
         self.worker.moveToThread(self.thread)
         self.thread.started.connect(self.worker.run)
         self.worker.progress.connect(
             lambda m: self.progress_dialog.set_detail(m) if self.progress_dialog else None)
+        self.worker.group_found.connect(self._on_dup_group_found)
         self.worker.finished.connect(self._on_dup_scan_done)
         self.worker.finished.connect(self.thread.quit)
         self.worker.finished.connect(self.worker.deleteLater)
         self.thread.finished.connect(self.thread.deleteLater)
+        # Botón cancelar activa el flag del worker
+        self.progress_dialog.cancelled.connect(self.worker.cancel)
         self.thread.start()
 
+    def _on_dup_group_found(self, group):
+        """Streaming: se agrega cada grupo apenas se confirma con hash completo."""
+        # Insertar antes del stretch (último item) del layout
+        insert_at = self.dup_layout.count() - 1
+        row = DuplicateGroupRow(group)
+        row.changed.connect(self._update_footer)
+        self.dup_layout.insertWidget(insert_at, row)
+        self.dup_rows.append(row)
+        self._update_footer()
+        # Actualizar contador en el status bar (dinámico)
+        total = sum(dr.bytes_to_free() for dr in self.dup_rows)
+        self.statusBar().showMessage(
+            f"Encontrados {len(self.dup_rows)} grupos — {human_bytes(total)} recuperable")
+
     def _on_dup_scan_done(self, groups):
+        # groups puede tener items ya renderizados via streaming — usamos los que hay
         if self.progress_dialog:
             self.progress_dialog.close()
             self.progress_dialog = None
         self.overlay.hide()
         self.action_button.setEnabled(True)
-        if not groups:
-            self.dup_empty.setText("No se encontraron archivos duplicados. ✓")
+        self._refresh_action_button_visibility()
+
+        # Las filas ya se agregaron por streaming (group_found). No re-agregamos.
+        found_count = len(self.dup_rows)
+        total = sum(dr.bytes_to_free() for dr in self.dup_rows)
+
+        if found_count == 0:
+            self.dup_empty.set_body("No se encontraron archivos duplicados. ✓")
             self.dup_empty.setVisible(True)
             self.clean_button.setEnabled(False)
             if "Duplicados" in self.dashboard_cards:
                 self.dashboard_cards["Duplicados"].set_status("Sin duplicados")
             return
-        insert_at = self.dup_layout.count() - 1
-        for group in groups[:200]:
-            row = DuplicateGroupRow(group)
-            row.changed.connect(self._update_footer)
-            self.dup_layout.insertWidget(insert_at, row)
-            self.dup_rows.append(row)
-            insert_at += 1
-        total = sum(dr.bytes_to_free() for dr in self.dup_rows)
+
         self.statusBar().showMessage(
-            f"{len(groups)} grupos de duplicados. Podés recuperar hasta {human_bytes(total)}.")
+            f"{found_count} grupos de duplicados. Podés recuperar hasta {human_bytes(total)}.")
         if "Duplicados" in self.dashboard_cards:
             self.dashboard_cards["Duplicados"].set_status(
-                f"{len(groups)} grupos · {human_bytes(total)}", highlight=True)
+                f"{found_count} grupos · {human_bytes(total)}", highlight=True)
         self._update_footer()
         if not self.isActiveWindow():
             notify("Duplicados encontrados",
-                   f"{len(groups)} grupos · podés recuperar hasta {human_bytes(total)}.",
+                   f"{found_count} grupos · podés recuperar hasta {human_bytes(total)}.",
                    subtitle="CleanMyCompu")
 
     def start_dup_clean(self):

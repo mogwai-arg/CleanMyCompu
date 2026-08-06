@@ -19,6 +19,19 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Callable, Dict, List, Optional
 
+
+class ScanCancel:
+    """Flag para cancelar un scan largo desde otro thread."""
+
+    def __init__(self):
+        self._cancelled = False
+
+    def cancel(self):
+        self._cancelled = True
+
+    def is_cancelled(self) -> bool:
+        return self._cancelled
+
 HOME = Path.home()
 
 # Roots cross-platform (Movies en Mac, Videos en Windows)
@@ -100,10 +113,18 @@ def find_duplicates(
     roots: Optional[List[Path]] = None,
     min_size: int = 1024 * 1024,   # 1 MB por defecto (evita ruido)
     on_progress: Optional[Callable[[str], None]] = None,
+    on_group_found: Optional[Callable[[List[Path]], None]] = None,
+    cancel: Optional[ScanCancel] = None,
 ) -> List[List[Path]]:
     """
     Devuelve una lista de grupos. Cada grupo es una lista de rutas
     de archivos con contenido idéntico (2 o más).
+
+    Streaming:
+      - on_group_found: se llama para CADA grupo confirmado, así la UI
+        puede mostrarlos a medida que aparecen sin esperar el fin del scan.
+      - cancel: si el flag se activa, la función corta y devuelve los
+        resultados parciales ya encontrados.
     """
     if roots is None:
         roots = DEFAULT_ROOTS
@@ -113,11 +134,15 @@ def find_duplicates(
     by_size: Dict[int, List[Path]] = defaultdict(list)
     seen = 0
     for root in roots:
+        if cancel and cancel.is_cancelled():
+            return []
         for path, size in _walk_files(root, min_size=min_size):
             by_size[size].append(path)
             seen += 1
             if on_progress and seen % 500 == 0:
                 on_progress(f"Recorridos {seen:,} archivos…")
+            if cancel and cancel.is_cancelled():
+                return []
 
     # Solo grupos con 2+ archivos del mismo tamaño
     candidates = {s: ps for s, ps in by_size.items() if len(ps) > 1}
@@ -128,6 +153,8 @@ def find_duplicates(
     # Nivel 2: hash de la cabeza (primeros 4 KB)
     by_head: Dict[tuple, List[Path]] = defaultdict(list)
     for size, paths in candidates.items():
+        if cancel and cancel.is_cancelled():
+            return []
         for p in paths:
             h = _hash_head(p)
             if h is not None:
@@ -136,21 +163,33 @@ def find_duplicates(
     head_groups = [ps for ps in by_head.values() if len(ps) > 1]
 
     if on_progress:
-        on_progress(f"Verificando {sum(len(g) for g in head_groups):,} archivos con hash completo…")
+        on_progress(f"Verificando {sum(len(g) for g in head_groups):,} candidatos "
+                    "con hash completo…")
 
-    # Nivel 3: hash completo para confirmar
+    # Nivel 3: hash completo para confirmar. Emitimos cada grupo confirmado
+    # al vuelo (streaming) para que la UI pueda mostrarlo enseguida.
     result: List[List[Path]] = []
-    for group in head_groups:
+    total_head = len(head_groups)
+    for idx, group in enumerate(head_groups, 1):
+        if cancel and cancel.is_cancelled():
+            break
+        if on_progress and idx % 5 == 0:
+            on_progress(f"Verificando {idx}/{total_head} grupos…")
         by_full: Dict[str, List[Path]] = defaultdict(list)
         for p in group:
+            if cancel and cancel.is_cancelled():
+                break
             fh = _hash_full(p)
             if fh is not None:
                 by_full[fh].append(p)
         for ps in by_full.values():
             if len(ps) > 1:
-                result.append(sorted(ps, key=lambda x: str(x)))
+                confirmed = sorted(ps, key=lambda x: str(x))
+                result.append(confirmed)
+                if on_group_found:
+                    on_group_found(confirmed)
 
-    # Ordenar grupos por tamaño total desperdiciado (más grande primero)
+    # Ordenar por tamaño total desperdiciado (mas grande primero)
     def wasted(group):
         try:
             single = group[0].stat().st_size

@@ -504,9 +504,13 @@ class ConfirmDialog(QDialog):
 class ProgressDialog(QDialog):
     """
     Diálogo modal con spinner circular + título + detalle.
+    Opcional: botón Cancelar que emite `cancelled` cuando el usuario quiere parar.
     """
+    cancelled = Signal()
+
     def __init__(self, title: str = "Trabajando…", parent=None,
-                 spinner_color: Optional[str] = None):
+                 spinner_color: Optional[str] = None,
+                 cancellable: bool = False):
         super().__init__(parent)
         self.setModal(True)
         self.setWindowTitle(title)
@@ -541,6 +545,26 @@ class ProgressDialog(QDialog):
         self.detail_lbl.setMinimumHeight(20)
         root.addWidget(self.detail_lbl)
 
+        # Botón cancelar (opcional)
+        if cancellable:
+            btn_row = QHBoxLayout()
+            btn_row.addStretch(1)
+            self.cancel_btn = QPushButton("Cancelar y usar lo encontrado")
+            self.cancel_btn.setProperty("role", "secondary")
+            self.cancel_btn.clicked.connect(self._on_cancel_clicked)
+            btn_row.addWidget(self.cancel_btn)
+            btn_row.addStretch(1)
+            root.addLayout(btn_row)
+        else:
+            self.cancel_btn = None
+
+    def _on_cancel_clicked(self):
+        if self.cancel_btn:
+            self.cancel_btn.setEnabled(False)
+            self.cancel_btn.setText("Cancelando…")
+        self.set_detail("Cancelando… guardando resultados encontrados.")
+        self.cancelled.emit()
+
     def set_detail(self, text: str):
         if len(text) > 80:
             text = text[:38] + " … " + text[-38:]
@@ -555,3 +579,66 @@ class ProgressDialog(QDialog):
         except Exception:
             pass
         super().close()
+
+
+class DriveSelectorDialog(QDialog):
+    """
+    Diálogo para elegir en qué carpetas/discos buscar antes de arrancar el scan.
+    """
+    def __init__(self, title: str, subtitle: str, roots: list, parent=None):
+        """
+        roots: lista de dicts {label, path, default_checked (bool)}
+        """
+        super().__init__(parent)
+        self.setModal(True)
+        self.setWindowTitle(title)
+        self.setMinimumWidth(480)
+        self.setStyleSheet(_dialog_stylesheet())
+        self._roots = roots
+        self._checks = []
+
+        root_layout = QVBoxLayout(self)
+        root_layout.setContentsMargins(Spacing.XXL, Spacing.XL, Spacing.XXL, Spacing.LG)
+        root_layout.setSpacing(Spacing.MD)
+
+        t = QLabel(title)
+        t.setObjectName("dlg-title")
+        root_layout.addWidget(t)
+
+        s = QLabel(subtitle)
+        s.setObjectName("dlg-subtitle")
+        s.setWordWrap(True)
+        root_layout.addWidget(s)
+
+        # Checkbox por root
+        from PySide6.QtWidgets import QCheckBox
+        for r in roots:
+            row = QHBoxLayout()
+            cb = QCheckBox(r["label"])
+            cb.setChecked(r.get("default_checked", True))
+            self._checks.append((cb, r["path"]))
+            row.addWidget(cb)
+            row.addStretch(1)
+            path_lbl = QLabel(str(r["path"]))
+            path_lbl.setObjectName("dlg-subtitle")
+            row.addWidget(path_lbl)
+            root_layout.addLayout(row)
+
+        root_layout.addStretch(1)
+
+        # Botones
+        footer = QHBoxLayout()
+        footer.addStretch(1)
+        cancel = QPushButton("Cancelar")
+        cancel.setProperty("role", "secondary")
+        cancel.clicked.connect(self.reject)
+        go = QPushButton("Buscar")
+        go.setProperty("role", "positive")
+        go.setDefault(True)
+        go.clicked.connect(self.accept)
+        footer.addWidget(cancel)
+        footer.addWidget(go)
+        root_layout.addLayout(footer)
+
+    def selected_paths(self) -> list:
+        return [path for cb, path in self._checks if cb.isChecked()]
