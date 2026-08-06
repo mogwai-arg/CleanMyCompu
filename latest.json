@@ -1,5 +1,5 @@
 {
-  "version": "1.5.1",
-  "url": "https://github.com/mogwai-arg/CleanMyCompu/releases/download/v1.5.1/CleanMyCompu.dmg",
-  "notes": "v1.5.1 — Hotfix Mac\n\nArreglado: la app v1.5.0 no arrancaba en Mac por dependencias faltantes \n(imagehash y Pillow). Ahora se bundlean correctamente con PyInstaller."
+  "version": "1.5.2",
+  "url": "https://github.com/mogwai-arg/CleanMyCompu/releases/download/v1.5.2/CleanMyCompu.dmg",
+  "notes": "v1.5.2 — Hotfix crítico\n\nArreglado bug que impedía abrir la app tras actualizar a v1.5.x — \nfaltaba una constante de color (Colors.TEXT_SUBTLE) usada por las \nnuevas secciones Monitor, Fotos similares y Escaneo de Users."
 }
