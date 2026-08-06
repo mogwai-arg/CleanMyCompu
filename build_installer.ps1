@@ -1,15 +1,13 @@
-# CleanMyCompu — arma el installer con Inno Setup, con UI de progreso.
+# CleanMyCompu - arma el installer con Inno Setup, con UI de progreso.
+# Todo en ASCII para evitar problemas de encoding con Windows PowerShell 5.1.
 
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 
 Set-Location $PSScriptRoot
 
-# ============================================================
-# UI
-# ============================================================
 $form = New-Object System.Windows.Forms.Form
-$form.Text = "CleanMyCompu — Armando Installer"
+$form.Text = "CleanMyCompu - Armando Installer"
 $form.Size = New-Object System.Drawing.Size(680, 460)
 $form.StartPosition = "CenterScreen"
 $form.FormBorderStyle = "FixedDialog"
@@ -26,7 +24,7 @@ $title.Size = New-Object System.Drawing.Size(640, 32)
 $form.Controls.Add($title)
 
 $subtitle = New-Object System.Windows.Forms.Label
-$subtitle.Text = "El installer sale en installer_output\ — es lo que le mandás a tu pareja."
+$subtitle.Text = "El installer sale en installer_output - es lo que le mandas a tu pareja."
 $subtitle.Font = New-Object System.Drawing.Font("Segoe UI", 9)
 $subtitle.ForeColor = [System.Drawing.Color]::FromArgb(110, 110, 115)
 $subtitle.Location = New-Object System.Drawing.Point(24, 56)
@@ -34,7 +32,7 @@ $subtitle.Size = New-Object System.Drawing.Size(640, 20)
 $form.Controls.Add($subtitle)
 
 $statusLabel = New-Object System.Windows.Forms.Label
-$statusLabel.Text = "Preparando…"
+$statusLabel.Text = "Preparando..."
 $statusLabel.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
 $statusLabel.Location = New-Object System.Drawing.Point(24, 92)
 $statusLabel.Size = New-Object System.Drawing.Size(640, 24)
@@ -90,9 +88,6 @@ $closeBtn.Enabled = $false
 $closeBtn.Add_Click({ $form.Close() })
 $form.Controls.Add($closeBtn)
 
-# ============================================================
-# Helpers
-# ============================================================
 function Set-Progress {
     param([int]$percent, [string]$status)
     $script:progress.Value = [Math]::Min(100, [Math]::Max(0, $percent))
@@ -111,7 +106,6 @@ function Add-Log {
 }
 
 function Find-InnoSetup {
-    # Buscar ISCC.exe en las ubicaciones tipicas
     $candidates = @(
         "C:\Program Files (x86)\Inno Setup 6\ISCC.exe",
         "C:\Program Files\Inno Setup 6\ISCC.exe",
@@ -121,7 +115,6 @@ function Find-InnoSetup {
     foreach ($p in $candidates) {
         if (Test-Path $p) { return $p }
     }
-    # Buscar en PATH
     $inPath = Get-Command "ISCC.exe" -ErrorAction SilentlyContinue
     if ($inPath) { return $inPath.Source }
     return $null
@@ -129,39 +122,36 @@ function Find-InnoSetup {
 
 function Show-InnoMissing {
     [System.Windows.Forms.MessageBox]::Show(
-        "No encontré Inno Setup instalado.`n`n" +
+        "No encontre Inno Setup instalado.`n`n" +
         "Descargalo GRATIS de:`nhttps://jrsoftware.org/isdl.php`n`n" +
-        "Instalalo con las opciones por defecto y volvé a correr build_installer.bat.",
+        "Instalalo con las opciones por defecto y volve a correr build_installer.bat.",
         "Falta Inno Setup",
         "OK", "Warning"
     ) | Out-Null
     Start-Process "https://jrsoftware.org/isdl.php"
 }
 
-# ============================================================
-# Pipeline
-# ============================================================
 function Run-BuildInstaller {
     try {
-        Set-Progress 5 "Chequeando dist\CleanMyCompu\CleanMyCompu.exe…"
+        Set-Progress 5 "Chequeando dist\CleanMyCompu\CleanMyCompu.exe..."
         if (-not (Test-Path "dist\CleanMyCompu\CleanMyCompu.exe")) {
-            Add-Log "ERROR: falta el .exe compilado. Corré build_win.bat primero."
+            Add-Log "ERROR: falta el .exe compilado. Corre build_win.bat primero."
             Set-Progress 100 "Falta el .exe compilado"
             return $false
         }
-        Add-Log "OK: encontré dist\CleanMyCompu\CleanMyCompu.exe"
+        Add-Log "OK: encontre dist\CleanMyCompu\CleanMyCompu.exe"
 
-        Set-Progress 15 "Buscando Inno Setup…"
+        Set-Progress 15 "Buscando Inno Setup..."
         $iscc = Find-InnoSetup
         if (-not $iscc) {
-            Add-Log "No encontré ISCC.exe. Abriendo la página de descarga de Inno Setup…"
+            Add-Log "No encontre ISCC.exe. Abriendo la pagina de descarga de Inno Setup..."
             Set-Progress 100 "Falta Inno Setup"
             Show-InnoMissing
             return $false
         }
         Add-Log "OK: Inno Setup en $iscc"
 
-        Set-Progress 25 "Compilando installer con Inno Setup…"
+        Set-Progress 25 "Compilando installer con Inno Setup..."
         $psi = New-Object System.Diagnostics.ProcessStartInfo
         $psi.FileName = $iscc
         $psi.Arguments = "installer.iss"
@@ -176,7 +166,6 @@ function Run-BuildInstaller {
                 $line = $p.StandardOutput.ReadLine()
                 if ($line) {
                     Add-Log $line
-                    # Bump progreso lento pero visible
                     if ($progress.Value -lt 95) { Set-Progress ($progress.Value + 2) $null }
                 }
             }
@@ -189,12 +178,11 @@ function Run-BuildInstaller {
         if ($err) { foreach ($l in $err -split "`r?`n") { if ($l) { Add-Log "! $l" } } }
 
         if ($p.ExitCode -ne 0) {
-            Add-Log "ERROR: ISCC falló con código $($p.ExitCode)"
-            Set-Progress 100 "Falló la compilación del installer"
+            Add-Log "ERROR: ISCC fallo con codigo $($p.ExitCode)"
+            Set-Progress 100 "Fallo la compilacion del installer"
             return $false
         }
 
-        # Encontrar el .exe generado
         $out = Get-ChildItem "installer_output\*.exe" -ErrorAction SilentlyContinue |
                Sort-Object LastWriteTime -Descending | Select-Object -First 1
         if ($out) {
@@ -203,21 +191,21 @@ function Run-BuildInstaller {
             Add-Log "==============================================="
             Add-Log "LISTO! Installer generado:"
             Add-Log "  $($out.FullName)"
-            Add-Log "  Tamaño: $sizeMb MB"
+            Add-Log "  Tamano: $sizeMb MB"
             Add-Log "==============================================="
             Add-Log ""
             Add-Log "PARA MANDAR A TU PAREJA:"
-            Add-Log "  1. Copiá $($out.Name) a un pendrive, WeTransfer, o Google Drive"
-            Add-Log "  2. Que doble-clic al .exe → wizard → Siguiente → Instalar"
-            Add-Log "  3. Si Windows Defender avisa 'Windows protegió tu equipo':"
-            Add-Log "     Más información → Ejecutar de todos modos"
+            Add-Log "  1. Copia $($out.Name) a un pendrive, WeTransfer, o Google Drive"
+            Add-Log "  2. Que doble-clic al .exe -> wizard -> Siguiente -> Instalar"
+            Add-Log "  3. Si Windows Defender avisa 'Windows protegio tu equipo':"
+            Add-Log "     Mas informacion -> Ejecutar de todos modos"
             Add-Log ""
         }
-        Set-Progress 100 "Listo — $($out.Name)"
+        Set-Progress 100 "Listo - $($out.Name)"
         return $true
     } catch {
-        Add-Log "EXCEPCIÓN: $_"
-        Set-Progress 100 "Excepción inesperada"
+        Add-Log "EXCEPCION: $_"
+        Set-Progress 100 "Excepcion inesperada"
         return $false
     }
 }

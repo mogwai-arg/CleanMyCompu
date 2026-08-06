@@ -1,20 +1,14 @@
-# CleanMyCompu — build .exe con UI de progreso (Windows Forms).
-# No requiere módulos externos; usa las clases WinForms de .NET.
-#
+# CleanMyCompu - build .exe con UI de progreso (Windows Forms).
+# Todo en ASCII para evitar problemas de encoding con Windows PowerShell 5.1.
 # Uso:  powershell -ExecutionPolicy Bypass -File build_win.ps1
-# (build_win.bat te lo lanza automáticamente)
 
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 
-# Working dir = donde vive este script
 Set-Location $PSScriptRoot
 
-# ============================================================
-# UI
-# ============================================================
 $form = New-Object System.Windows.Forms.Form
-$form.Text = "CleanMyCompu — Compilando"
+$form.Text = "CleanMyCompu - Compilando"
 $form.Size = New-Object System.Drawing.Size(680, 460)
 $form.StartPosition = "CenterScreen"
 $form.FormBorderStyle = "FixedDialog"
@@ -23,7 +17,6 @@ $form.MinimizeBox = $true
 $form.BackColor = [System.Drawing.Color]::White
 $form.Font = New-Object System.Drawing.Font("Segoe UI", 9)
 
-# Título
 $title = New-Object System.Windows.Forms.Label
 $title.Text = "Compilando CleanMyCompu.exe"
 $title.Font = New-Object System.Drawing.Font("Segoe UI", 16, [System.Drawing.FontStyle]::Bold)
@@ -32,25 +25,22 @@ $title.Location = New-Object System.Drawing.Point(24, 20)
 $title.Size = New-Object System.Drawing.Size(640, 32)
 $form.Controls.Add($title)
 
-# Subtitulo
 $subtitle = New-Object System.Windows.Forms.Label
-$subtitle.Text = "Esto tarda entre 3 y 8 minutos la primera vez. Andate a tomar un café."
+$subtitle.Text = "Esto tarda entre 3 y 8 minutos la primera vez. Andate a tomar un cafe."
 $subtitle.Font = New-Object System.Drawing.Font("Segoe UI", 9)
 $subtitle.ForeColor = [System.Drawing.Color]::FromArgb(110, 110, 115)
 $subtitle.Location = New-Object System.Drawing.Point(24, 56)
 $subtitle.Size = New-Object System.Drawing.Size(640, 20)
 $form.Controls.Add($subtitle)
 
-# Status label (fase actual)
 $statusLabel = New-Object System.Windows.Forms.Label
-$statusLabel.Text = "Preparando…"
+$statusLabel.Text = "Preparando..."
 $statusLabel.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
 $statusLabel.ForeColor = [System.Drawing.Color]::FromArgb(29, 29, 31)
 $statusLabel.Location = New-Object System.Drawing.Point(24, 92)
 $statusLabel.Size = New-Object System.Drawing.Size(640, 24)
 $form.Controls.Add($statusLabel)
 
-# Progress bar
 $progress = New-Object System.Windows.Forms.ProgressBar
 $progress.Location = New-Object System.Drawing.Point(24, 122)
 $progress.Size = New-Object System.Drawing.Size(632, 22)
@@ -60,7 +50,6 @@ $progress.Maximum = 100
 $progress.Value = 0
 $form.Controls.Add($progress)
 
-# Log box (siempre visible, útil para ver qué está pasando)
 $logLabel = New-Object System.Windows.Forms.Label
 $logLabel.Text = "Detalle:"
 $logLabel.Font = New-Object System.Drawing.Font("Segoe UI", 9)
@@ -80,9 +69,8 @@ $logBox.BackColor = [System.Drawing.Color]::FromArgb(245, 245, 247)
 $logBox.WordWrap = $false
 $form.Controls.Add($logBox)
 
-# Botones (Cerrar + Abrir carpeta)
 $openBtn = New-Object System.Windows.Forms.Button
-$openBtn.Text = "Abrir carpeta dist\"
+$openBtn.Text = "Abrir carpeta dist"
 $openBtn.Location = New-Object System.Drawing.Point(370, 380)
 $openBtn.Size = New-Object System.Drawing.Size(160, 32)
 $openBtn.FlatStyle = "Flat"
@@ -99,7 +87,7 @@ $closeBtn.Text = "Cerrar"
 $closeBtn.Location = New-Object System.Drawing.Point(540, 380)
 $closeBtn.Size = New-Object System.Drawing.Size(116, 32)
 $closeBtn.FlatStyle = "Flat"
-$closeBtn.BackColor = [System.Drawing.Color]::FromArgb(52, 199, 89)  # verde
+$closeBtn.BackColor = [System.Drawing.Color]::FromArgb(52, 199, 89)
 $closeBtn.ForeColor = [System.Drawing.Color]::White
 $closeBtn.FlatAppearance.BorderSize = 0
 $closeBtn.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
@@ -107,9 +95,6 @@ $closeBtn.Enabled = $false
 $closeBtn.Add_Click({ $form.Close() })
 $form.Controls.Add($closeBtn)
 
-# ============================================================
-# Helpers para actualizar UI en vivo
-# ============================================================
 function Set-Progress {
     param([int]$percent, [string]$status)
     $script:progress.Value = [Math]::Min(100, [Math]::Max(0, $percent))
@@ -146,7 +131,6 @@ function Invoke-Silent {
         [System.Windows.Forms.Application]::DoEvents()
         Start-Sleep -Milliseconds 40
     }
-    # Drenar el resto de la salida
     $tail = $p.StandardOutput.ReadToEnd()
     if ($tail) { foreach ($l in $tail -split "`r?`n") { if ($l) { Add-Log $l } } }
     $err = $p.StandardError.ReadToEnd()
@@ -154,46 +138,39 @@ function Invoke-Silent {
     return $p.ExitCode
 }
 
-# ============================================================
-# Build pipeline (se ejecuta al mostrarse el form)
-# ============================================================
 function Run-Build {
     try {
-        # Fase 1: venv
-        Set-Progress 5 "Chequeando entorno virtual…"
+        Set-Progress 5 "Chequeando entorno virtual..."
         if (-not (Test-Path ".venv")) {
-            Add-Log "Creando entorno virtual (.venv)…"
+            Add-Log "Creando entorno virtual (.venv)..."
             $rc = Invoke-Silent "python" @("-m", "venv", ".venv") "python -m venv .venv"
             if ($rc -ne 0) {
-                Add-Log "ERROR: no se encontró Python. Instalá desde https://www.python.org/downloads/"
-                Set-Progress 100 "Falló: falta Python"
+                Add-Log "ERROR: no se encontro Python. Instalalo desde https://www.python.org/downloads/"
+                Set-Progress 100 "Fallo: falta Python"
                 return $false
             }
         }
         Set-Progress 15 "Entorno virtual OK."
 
-        # Fase 2: pip upgrade + deps
-        Set-Progress 20 "Actualizando pip…"
+        Set-Progress 20 "Actualizando pip..."
         Invoke-Silent ".venv\Scripts\pip.exe" @("install", "--quiet", "--upgrade", "pip") "pip upgrade" | Out-Null
 
-        Set-Progress 30 "Instalando dependencias (PySide6, psutil, pyinstaller, send2trash)…"
+        Set-Progress 30 "Instalando dependencias (PySide6, psutil, pyinstaller, send2trash)..."
         $rc = Invoke-Silent ".venv\Scripts\pip.exe" @("install", "--quiet", "PySide6", "send2trash", "psutil", "pyinstaller") "pip install deps"
         if ($rc -ne 0) {
-            Add-Log "ERROR: falló pip install."
-            Set-Progress 100 "Falló: no se pudieron instalar dependencias"
+            Add-Log "ERROR: fallo pip install."
+            Set-Progress 100 "Fallo: no se pudieron instalar dependencias"
             return $false
         }
         Set-Progress 45 "Dependencias listas."
 
-        # Fase 3: icono
-        Set-Progress 48 "Generando ícono…"
+        Set-Progress 48 "Generando icono..."
         if (-not (Test-Path "assets\AppIcon.ico")) {
             $iconCode = "from PySide6.QtWidgets import QApplication; import sys; app = QApplication(sys.argv); from icons import make_logo_pixmap; pm = make_logo_pixmap(size=256, bg='#1D1D1F', fg='#FFFFFF', radius_ratio=0.225, padding_ratio=0.09); pm.setDevicePixelRatio(1.0); pm.save('assets/AppIcon.ico', 'ICO')"
             Invoke-Silent ".venv\Scripts\python.exe" @("-c", "`"$iconCode`"") "generar icono" | Out-Null
         }
 
-        # Fase 4: PyInstaller (la más larga)
-        Set-Progress 55 "Compilando .exe con PyInstaller (esto tarda 2–5 minutos)…"
+        Set-Progress 55 "Compilando .exe con PyInstaller (2 a 5 minutos)..."
         $pyi = @(
             "--windowed", "--name", "CleanMyCompu",
             "--icon", "assets\AppIcon.ico",
@@ -208,30 +185,29 @@ function Run-Build {
         )
         $rc = Invoke-Silent ".venv\Scripts\pyinstaller.exe" $pyi "PyInstaller build"
         if ($rc -ne 0) {
-            Add-Log "ERROR: PyInstaller falló."
-            Set-Progress 100 "Falló: mirá el log arriba."
+            Add-Log "ERROR: PyInstaller fallo."
+            Set-Progress 100 "Fallo: mira el log arriba."
             return $false
         }
 
-        Set-Progress 100 "Listo — dist\CleanMyCompu\CleanMyCompu.exe"
+        Set-Progress 100 "Listo - dist\CleanMyCompu\CleanMyCompu.exe"
         Add-Log ""
         Add-Log "==============================================="
-        Add-Log "BUILD OK. El .exe está en: dist\CleanMyCompu\"
+        Add-Log "BUILD OK. El .exe esta en: dist\CleanMyCompu\CleanMyCompu.exe"
         Add-Log "==============================================="
         Add-Log ""
-        Add-Log "Para armar el instalador que le mandás a tu pareja:"
-        Add-Log "  1. Instalá Inno Setup: https://jrsoftware.org/isdl.php"
-        Add-Log "  2. Corré build_installer.bat"
+        Add-Log "Para armar el instalador que le mandas a tu pareja:"
+        Add-Log "  1. Instala Inno Setup: https://jrsoftware.org/isdl.php"
+        Add-Log "  2. Corre build_installer.bat"
         Add-Log ""
         return $true
     } catch {
-        Add-Log "EXCEPCIÓN: $_"
-        Set-Progress 100 "Falló: excepción inesperada"
+        Add-Log "EXCEPCION: $_"
+        Set-Progress 100 "Fallo: excepcion inesperada"
         return $false
     }
 }
 
-# Cuando el form se muestre, corremos el build
 $form.Add_Shown({
     $ok = Run-Build
     $closeBtn.Enabled = $true
@@ -240,9 +216,8 @@ $form.Add_Shown({
         $closeBtn.Text = "Cerrar"
     } else {
         $closeBtn.Text = "Cerrar (con errores)"
-        $closeBtn.BackColor = [System.Drawing.Color]::FromArgb(255, 59, 48)  # rojo
+        $closeBtn.BackColor = [System.Drawing.Color]::FromArgb(255, 59, 48)
     }
 })
 
-# Mostrar y bloquear hasta que se cierre
 [void]$form.ShowDialog()
