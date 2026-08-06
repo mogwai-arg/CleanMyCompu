@@ -152,30 +152,54 @@ function Run-BuildInstaller {
         Add-Log "OK: Inno Setup en $iscc"
 
         Set-Progress 25 "Compilando installer con Inno Setup..."
-        $psi = New-Object System.Diagnostics.ProcessStartInfo
-        $psi.FileName = $iscc
-        $psi.Arguments = "installer.iss"
-        $psi.RedirectStandardOutput = $true
-        $psi.RedirectStandardError = $true
-        $psi.UseShellExecute = $false
-        $psi.CreateNoWindow = $true
-        $p = [System.Diagnostics.Process]::Start($psi)
+        # Barra marquee (indeterminada) porque ISCC no reporta progreso lineal
+        $script:progress.Style = "Marquee"
+        $script:progress.MarqueeAnimationSpeed = 30
 
+        $outFile = [System.IO.Path]::GetTempFileName()
+        $errFile = [System.IO.Path]::GetTempFileName()
+        $p = Start-Process -FilePath $iscc -ArgumentList "installer.iss" `
+            -NoNewWindow -PassThru `
+            -RedirectStandardOutput $outFile `
+            -RedirectStandardError $errFile
+
+        $lastOutSize = 0
         while (-not $p.HasExited) {
-            while (-not $p.StandardOutput.EndOfStream) {
-                $line = $p.StandardOutput.ReadLine()
-                if ($line) {
-                    Add-Log $line
-                    if ($progress.Value -lt 95) { Set-Progress ($progress.Value + 2) $null }
+            try {
+                $curSize = (Get-Item $outFile -ErrorAction SilentlyContinue).Length
+                if ($curSize -and $curSize -gt $lastOutSize) {
+                    $fs = [System.IO.File]::Open($outFile, "Open", "Read", "ReadWrite")
+                    $fs.Seek($lastOutSize, "Begin") | Out-Null
+                    $reader = New-Object System.IO.StreamReader($fs)
+                    $newContent = $reader.ReadToEnd()
+                    $reader.Close(); $fs.Close()
+                    foreach ($l in $newContent -split "`r?`n") {
+                        if ($l.Trim()) { Add-Log $l.TrimEnd() }
+                    }
+                    $lastOutSize = $curSize
+                }
+            } catch { }
+            [System.Windows.Forms.Application]::DoEvents()
+            Start-Sleep -Milliseconds 200
+        }
+        Start-Sleep -Milliseconds 300
+        try {
+            $tail = Get-Content $outFile -Raw -ErrorAction SilentlyContinue
+            if ($tail -and $tail.Length -gt $lastOutSize) {
+                foreach ($l in $tail.Substring($lastOutSize) -split "`r?`n") {
+                    if ($l.Trim()) { Add-Log $l.TrimEnd() }
                 }
             }
-            [System.Windows.Forms.Application]::DoEvents()
-            Start-Sleep -Milliseconds 30
-        }
-        $tail = $p.StandardOutput.ReadToEnd()
-        if ($tail) { foreach ($l in $tail -split "`r?`n") { if ($l) { Add-Log $l } } }
-        $err = $p.StandardError.ReadToEnd()
-        if ($err) { foreach ($l in $err -split "`r?`n") { if ($l) { Add-Log "! $l" } } }
+            $errTail = Get-Content $errFile -Raw -ErrorAction SilentlyContinue
+            if ($errTail) {
+                foreach ($l in $errTail -split "`r?`n") {
+                    if ($l.Trim()) { Add-Log ("! " + $l.TrimEnd()) }
+                }
+            }
+        } catch { }
+        Remove-Item $outFile, $errFile -Force -ErrorAction SilentlyContinue
+
+        $script:progress.Style = "Continuous"
 
         if ($p.ExitCode -ne 0) {
             Add-Log "ERROR: ISCC fallo con codigo $($p.ExitCode)"

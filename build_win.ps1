@@ -114,28 +114,86 @@ function Add-Log {
 
 function Invoke-Silent {
     # OJO: no usar $args como nombre de parametro, es variable reservada de PowerShell.
-    param([string]$exe, [string[]]$argList, [string]$phase)
+    param([string]$exe, [string[]]$argList, [string]$phase, [bool]$marquee=$false)
     Add-Log "> $phase"
-    $psi = New-Object System.Diagnostics.ProcessStartInfo
-    $psi.FileName = $exe
-    $psi.Arguments = ($argList -join " ")
-    $psi.RedirectStandardOutput = $true
-    $psi.RedirectStandardError = $true
-    $psi.UseShellExecute = $false
-    $psi.CreateNoWindow = $true
-    $p = [System.Diagnostics.Process]::Start($psi)
-    while (-not $p.HasExited) {
-        while (-not $p.StandardOutput.EndOfStream) {
-            $line = $p.StandardOutput.ReadLine()
-            if ($line) { Add-Log $line }
-        }
-        [System.Windows.Forms.Application]::DoEvents()
-        Start-Sleep -Milliseconds 40
+
+    # Barra en modo indeterminado durante ops largas (PyInstaller tarda minutos sin imprimir)
+    if ($marquee) {
+        $script:progress.Style = "Marquee"
+        $script:progress.MarqueeAnimationSpeed = 30
     }
-    $tail = $p.StandardOutput.ReadToEnd()
-    if ($tail) { foreach ($l in $tail -split "`r?`n") { if ($l) { Add-Log $l } } }
-    $err = $p.StandardError.ReadToEnd()
-    if ($err) { foreach ($l in $err -split "`r?`n") { if ($l) { Add-Log "! $l" } } }
+
+    # Redirigir stdout/stderr a archivos temporales (evita bloqueo en ReadLine)
+    $outFile = [System.IO.Path]::GetTempFileName()
+    $errFile = [System.IO.Path]::GetTempFileName()
+
+    $p = Start-Process -FilePath $exe -ArgumentList $argList `
+        -NoNewWindow -PassThru `
+        -RedirectStandardOutput $outFile `
+        -RedirectStandardError $errFile
+
+    $lastOutSize = 0
+    $lastErrSize = 0
+
+    while (-not $p.HasExited) {
+        # Leer stdout incrementalmente
+        try {
+            $curSize = (Get-Item $outFile -ErrorAction SilentlyContinue).Length
+            if ($curSize -and $curSize -gt $lastOutSize) {
+                $fs = [System.IO.File]::Open($outFile, "Open", "Read", "ReadWrite")
+                $fs.Seek($lastOutSize, "Begin") | Out-Null
+                $reader = New-Object System.IO.StreamReader($fs)
+                $newContent = $reader.ReadToEnd()
+                $reader.Close(); $fs.Close()
+                foreach ($l in $newContent -split "`r?`n") {
+                    if ($l.Trim()) { Add-Log $l.TrimEnd() }
+                }
+                $lastOutSize = $curSize
+            }
+            # Leer stderr incrementalmente
+            $curErr = (Get-Item $errFile -ErrorAction SilentlyContinue).Length
+            if ($curErr -and $curErr -gt $lastErrSize) {
+                $fs = [System.IO.File]::Open($errFile, "Open", "Read", "ReadWrite")
+                $fs.Seek($lastErrSize, "Begin") | Out-Null
+                $reader = New-Object System.IO.StreamReader($fs)
+                $newContent = $reader.ReadToEnd()
+                $reader.Close(); $fs.Close()
+                foreach ($l in $newContent -split "`r?`n") {
+                    if ($l.Trim()) { Add-Log ("! " + $l.TrimEnd()) }
+                }
+                $lastErrSize = $curErr
+            }
+        } catch { }
+
+        [System.Windows.Forms.Application]::DoEvents()
+        Start-Sleep -Milliseconds 200
+    }
+
+    # Drenar lo que quede
+    Start-Sleep -Milliseconds 300
+    try {
+        if ((Get-Item $outFile -ErrorAction SilentlyContinue).Length -gt $lastOutSize) {
+            $tail = Get-Content $outFile -Raw -ErrorAction SilentlyContinue
+            $newPart = $tail.Substring($lastOutSize)
+            foreach ($l in $newPart -split "`r?`n") {
+                if ($l.Trim()) { Add-Log $l.TrimEnd() }
+            }
+        }
+        $errTail = Get-Content $errFile -Raw -ErrorAction SilentlyContinue
+        if ($errTail -and $errTail.Length -gt $lastErrSize) {
+            $newErrPart = $errTail.Substring($lastErrSize)
+            foreach ($l in $newErrPart -split "`r?`n") {
+                if ($l.Trim()) { Add-Log ("! " + $l.TrimEnd()) }
+            }
+        }
+    } catch { }
+
+    Remove-Item $outFile, $errFile -Force -ErrorAction SilentlyContinue
+
+    if ($marquee) {
+        $script:progress.Style = "Continuous"
+    }
+
     return $p.ExitCode
 }
 
@@ -184,7 +242,7 @@ function Run-Build {
             "--clean", "--noconfirm",
             "main.py"
         )
-        $rc = Invoke-Silent ".venv\Scripts\pyinstaller.exe" $pyi "PyInstaller build"
+        $rc = Invoke-Silent ".venv\Scripts\pyinstaller.exe" $pyi "PyInstaller build" $true
         if ($rc -ne 0) {
             Add-Log "ERROR: PyInstaller fallo."
             Set-Progress 100 "Fallo: mira el log arriba."
