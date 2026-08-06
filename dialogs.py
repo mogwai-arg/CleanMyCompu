@@ -5,7 +5,7 @@ Reemplazan los QMessageBox nativos con nuestro sistema de diseño.
 
 from typing import Callable, List, Optional
 
-from PySide6.QtCore import Qt, QSize, QTimer, QRectF
+from PySide6.QtCore import Qt, QSize, QTimer, QRectF, Signal
 from PySide6.QtGui import QIcon, QPainter, QPen, QColor
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QScrollArea,
