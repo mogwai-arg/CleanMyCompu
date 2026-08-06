@@ -113,11 +113,12 @@ function Add-Log {
 }
 
 function Invoke-Silent {
-    param([string]$exe, [string[]]$args, [string]$phase)
+    # OJO: no usar $args como nombre de parametro, es variable reservada de PowerShell.
+    param([string]$exe, [string[]]$argList, [string]$phase)
     Add-Log "> $phase"
     $psi = New-Object System.Diagnostics.ProcessStartInfo
     $psi.FileName = $exe
-    $psi.Arguments = ($args -join " ")
+    $psi.Arguments = ($argList -join " ")
     $psi.RedirectStandardOutput = $true
     $psi.RedirectStandardError = $true
     $psi.UseShellExecute = $false
