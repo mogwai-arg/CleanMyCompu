@@ -1753,11 +1753,27 @@ class MainWindow(QMainWindow):
         self.disk_cards_container.setSpacing(Spacing.MD)
         self.disk_layout.addLayout(self.disk_cards_container)
 
-        # Resultados del último scan (folder rankings)
+        # Breadcrumb (navegación) — visible solo cuando hay resultados
+        self.disk_breadcrumb_wrap = QFrame()
+        self.disk_breadcrumb_wrap.setObjectName("category-row")
+        self.disk_breadcrumb_layout = QHBoxLayout(self.disk_breadcrumb_wrap)
+        self.disk_breadcrumb_layout.setContentsMargins(
+            Spacing.LG, Spacing.SM, Spacing.LG, Spacing.SM)
+        self.disk_breadcrumb_layout.setSpacing(Spacing.SM)
+        self.disk_breadcrumb_wrap.setVisible(False)
+        self.disk_layout.addWidget(self.disk_breadcrumb_wrap)
+
+        # Título + hint de drill-down
         self.disk_results_title = QLabel("")
         self.disk_results_title.setProperty("role", "h3")
         self.disk_results_title.setVisible(False)
         self.disk_layout.addWidget(self.disk_results_title)
+
+        self.disk_results_hint = QLabel(
+            "💡 Clic en cualquier carpeta para entrar y ver qué contiene.")
+        self.disk_results_hint.setObjectName("row-desc")
+        self.disk_results_hint.setVisible(False)
+        self.disk_layout.addWidget(self.disk_results_hint)
 
         self.disk_results_layout = QVBoxLayout()
         self.disk_results_layout.setSpacing(Spacing.XS)
@@ -1765,7 +1781,62 @@ class MainWindow(QMainWindow):
 
         self.disk_layout.addStretch(1)
         page.setWidget(content)
+        # Stack de paths para navegar hacia atrás
+        self._disk_path_stack = []
         return page
+
+    def _update_disk_breadcrumb(self, current_path: Path):
+        """Redibuja el breadcrumb 'C:\\ > Users > comunicacion > ...' clickeable."""
+        # Limpiar
+        while self.disk_breadcrumb_layout.count():
+            it = self.disk_breadcrumb_layout.takeAt(0)
+            if it.widget():
+                it.widget().setParent(None)
+
+        # Back button
+        back_btn = QPushButton("← Volver")
+        back_btn.setProperty("role", "secondary")
+        back_btn.setEnabled(len(self._disk_path_stack) > 1)
+        back_btn.clicked.connect(self._disk_go_back)
+        self.disk_breadcrumb_layout.addWidget(back_btn)
+
+        # Path segments clickeables
+        parts = list(current_path.parts)  # ['C:\\', 'Users', 'comunicacion', ...]
+        accumulated = Path(parts[0]) if parts else Path()
+        for i, part in enumerate(parts):
+            if i > 0:
+                accumulated = accumulated / part
+                sep = QLabel(">")
+                sep.setObjectName("row-desc")
+                self.disk_breadcrumb_layout.addWidget(sep)
+            # Un botón "link" con el segmento
+            seg_btn = QPushButton(part)
+            seg_btn.setProperty("role", "link")
+            seg_btn.setCursor(Qt.PointingHandCursor)
+            target = Path(accumulated)  # copia
+            seg_btn.clicked.connect(
+                lambda checked=False, t=target: self._disk_jump_to(t))
+            self.disk_breadcrumb_layout.addWidget(seg_btn)
+
+        self.disk_breadcrumb_layout.addStretch(1)
+        self.disk_breadcrumb_wrap.setVisible(True)
+
+    def _disk_jump_to(self, path: Path):
+        """Salta a un path del breadcrumb (podés retroceder N niveles de una)."""
+        # Trim el stack hasta encontrar ese path
+        while self._disk_path_stack and self._disk_path_stack[-1] != path:
+            self._disk_path_stack.pop()
+        # Si no lo encontramos, empezar fresco desde ahí
+        if not self._disk_path_stack:
+            self._disk_path_stack.append(path)
+        self.start_disk_scan(str(path), path.name or str(path), push_history=False)
+
+    def _disk_go_back(self):
+        if len(self._disk_path_stack) < 2:
+            return
+        self._disk_path_stack.pop()
+        prev = self._disk_path_stack[-1]
+        self.start_disk_scan(str(prev), prev.name or str(prev), push_history=False)
 
     def _populate_disk_cards(self):
         """Al entrar a la sección, poblar las cards con los discos actuales."""
@@ -2266,6 +2337,9 @@ class MainWindow(QMainWindow):
             self.action_button.setVisible(False)
             self.footer.setVisible(False)
             self._populate_disk_cards()
+            # Resetear breadcrumb al entrar
+            self._disk_path_stack = []
+            self.disk_breadcrumb_wrap.setVisible(False)
         self._update_footer()
 
     def _apply_category_filter(self, group: str):
@@ -2559,7 +2633,8 @@ class MainWindow(QMainWindow):
     def _build_duplicates_root_options(self):
         """Devuelve lista de opciones para el DriveSelectorDialog."""
         from platform_helpers import (user_downloads, user_documents, user_desktop,
-                                      user_pictures, user_videos, list_data_drives)
+                                      user_pictures, user_videos, list_data_drives,
+                                      list_all_disks)
         opts = [
             {"label": "Descargas", "path": user_downloads(), "default_checked": True},
             {"label": "Documentos", "path": user_documents(), "default_checked": True},
@@ -2569,12 +2644,14 @@ class MainWindow(QMainWindow):
         ]
         # Filtrar los que no existen
         opts = [o for o in opts if o["path"].exists()]
-        # Sumar discos data (D:, E:, etc.) — desmarcados por default porque
-        # pueden ser lentos y grandes
-        for drive in list_data_drives():
+        # Sumar TODOS los discos completos (C:, D:, E:) — desmarcados por default
+        # porque son scans largos. Útiles si querés buscar duplicados globales.
+        for disk in list_all_disks():
+            drive_path = Path(disk["mount"])
+            letter = disk.get("label", drive_path.name.rstrip(chr(92)))
             opts.append({
-                "label": f"Disco {drive.name.rstrip(chr(92))}",
-                "path": drive,
+                "label": f"Disco {letter}:\\  completo",
+                "path": drive_path,
                 "default_checked": False,
             })
         return opts
@@ -3471,13 +3548,18 @@ class MainWindow(QMainWindow):
 
     # ---- Analizador de disco ----
 
-    def start_disk_scan(self, mount: str, label: str):
+    def start_disk_scan(self, mount: str, label: str, push_history: bool = True):
+        # Push al stack de navegación
+        if push_history:
+            self._disk_path_stack.append(Path(mount))
         # Limpiar resultados previos
         while self.disk_results_layout.count():
             it = self.disk_results_layout.takeAt(0)
             if it.widget():
                 it.widget().setParent(None)
         self.disk_results_title.setVisible(False)
+        self.disk_results_hint.setVisible(False)
+        self._update_disk_breadcrumb(Path(mount))
 
         self.overlay.show_over()
         self.progress_dialog = ProgressDialog(
@@ -3508,12 +3590,14 @@ class MainWindow(QMainWindow):
 
         results = result.get("results", [])
         label = result.get("label", "?")
+        current_path = self._disk_path_stack[-1] if self._disk_path_stack else Path(label)
         self.disk_results_title.setText(
-            f"Top carpetas del disco {label} — {len(results)} entradas")
+            f"Contenido de {current_path} — {len(results)} entradas")
         self.disk_results_title.setVisible(True)
+        self.disk_results_hint.setVisible(bool(results))
 
         if not results:
-            empty = QLabel("No se pudo escanear el disco (sin permisos o vacío).")
+            empty = QLabel("Esta carpeta está vacía o no se puede leer (sin permisos).")
             empty.setObjectName("row-desc")
             self.disk_results_layout.addWidget(empty)
             return
@@ -3521,50 +3605,65 @@ class MainWindow(QMainWindow):
         max_size = max((r["size"] for r in results), default=1)
         total_scanned = sum(r["size"] for r in results)
         for r in results:
-            row = QFrame()
-            row.setObjectName("category-row")
-            h = QHBoxLayout(row)
-            h.setContentsMargins(Spacing.LG, Spacing.MD, Spacing.LG, Spacing.MD)
-            h.setSpacing(Spacing.MD)
-
-            icon_lbl = QLabel()
-            icon_lbl.setPixmap(make_icon_pixmap(
-                "hard-drive" if r["kind"] == "file" else "box",
-                size=18, color=icon_color()))
-            icon_lbl.setFixedSize(24, 24)
-            h.addWidget(icon_lbl)
-
-            name = QLabel(r["name"])
-            name.setObjectName("row-name")
-            name.setToolTip(str(r["path"]))
-            h.addWidget(name)
-
-            # Barra proporcional
-            bar_wrap = QFrame()
-            bar_wrap.setFixedHeight(6)
-            bl = QHBoxLayout(bar_wrap)
-            bl.setContentsMargins(0, 0, 0, 0)
-            bl.setSpacing(0)
-            fill = QFrame()
-            fill.setStyleSheet(
-                f"background: {Colors.SUCCESS_DARK if is_dark_mode() else Colors.SUCCESS};"
-                " border-radius: 3px;")
-            spacer_w = QWidget()
-            bl.addWidget(fill, stretch=max(1, int(r["size"] * 100 / max_size)))
-            bl.addWidget(spacer_w, stretch=max(1, int((max_size - r["size"]) * 100 / max_size)))
-            h.addWidget(bar_wrap, stretch=1)
-
-            size_lbl = QLabel(human_bytes(r["size"]))
-            size_lbl.setObjectName("row-size")
-            size_lbl.setMinimumWidth(80)
-            size_lbl.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-            h.addWidget(size_lbl)
-
-            self.disk_results_layout.addWidget(row)
+            self.disk_results_layout.addWidget(
+                self._build_disk_row(r, max_size))
 
         self.statusBar().showMessage(
-            f"Disco {label}: escaneadas {len(results)} entradas, "
-            f"total {human_bytes(total_scanned)}.")
+            f"{current_path}: {len(results)} entradas, total {human_bytes(total_scanned)}.")
+
+    def _build_disk_row(self, r: dict, max_size: int) -> QFrame:
+        """Fila del analizador — clickeable si es carpeta (drill-down)."""
+        row = QFrame()
+        row.setObjectName("category-row")
+        is_folder = r["kind"] == "folder"
+        if is_folder:
+            row.setCursor(Qt.PointingHandCursor)
+            # Click en cualquier parte de la fila entra a la carpeta
+            path = r["path"]
+            row.mousePressEvent = lambda ev, p=path: self._disk_enter_folder(p)
+
+        h = QHBoxLayout(row)
+        h.setContentsMargins(Spacing.LG, Spacing.MD, Spacing.LG, Spacing.MD)
+        h.setSpacing(Spacing.MD)
+
+        icon_lbl = QLabel()
+        icon_lbl.setPixmap(make_icon_pixmap(
+            "box" if is_folder else "hard-drive",
+            size=18, color=icon_color()))
+        icon_lbl.setFixedSize(24, 24)
+        h.addWidget(icon_lbl)
+
+        name = QLabel(r["name"] + ("  ›" if is_folder else ""))
+        name.setObjectName("row-name")
+        name.setToolTip(str(r["path"]))
+        h.addWidget(name)
+
+        # Barra proporcional
+        bar_wrap = QFrame()
+        bar_wrap.setFixedHeight(6)
+        bl = QHBoxLayout(bar_wrap)
+        bl.setContentsMargins(0, 0, 0, 0)
+        bl.setSpacing(0)
+        fill = QFrame()
+        fill.setStyleSheet(
+            f"background: {Colors.SUCCESS_DARK if is_dark_mode() else Colors.SUCCESS};"
+            " border-radius: 3px;")
+        spacer_w = QWidget()
+        bl.addWidget(fill, stretch=max(1, int(r["size"] * 100 / max_size)))
+        bl.addWidget(spacer_w, stretch=max(1, int((max_size - r["size"]) * 100 / max_size)))
+        h.addWidget(bar_wrap, stretch=1)
+
+        size_lbl = QLabel(human_bytes(r["size"]))
+        size_lbl.setObjectName("row-size")
+        size_lbl.setMinimumWidth(80)
+        size_lbl.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        h.addWidget(size_lbl)
+
+        return row
+
+    def _disk_enter_folder(self, path: Path):
+        """Drill-down: escanea el contenido de la carpeta clickeada."""
+        self.start_disk_scan(str(path), path.name or str(path), push_history=True)
 
     # ---- Rendimiento (suspender procesos) ----
 
