@@ -1,0 +1,41 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+
+# Virtualenv (cada plataforma tiene el suyo, cross-platform no funciona)
+.venv/
+venv/
+
+# Build artifacts (se generan con build_app.sh / build_win.bat)
+build/
+dist/
+*.spec
+
+# macOS
+.DS_Store
+._*
+
+# Windows
+Thumbs.db
+desktop.ini
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Datos runtime del usuario (nunca subir stats personales)
+~/.cleanmycompu/
+
+# Iconset intermedio (se regenera de assets/icon_*.png)
+assets/AppIcon.iconset/
+assets/AppIcon.ico
+# Duplicados que crea Finder al copiar
+assets/**/* [0-9].png
+assets/**/*[0-9]@2x.png
+
+# Logs
+/tmp/cleanmycompu*.log

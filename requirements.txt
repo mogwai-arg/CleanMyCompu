@@ -1,0 +1,3 @@
+PySide6>=6.6
+send2trash>=1.8
+pyinstaller>=6.0  # solo para empaquetar como .app

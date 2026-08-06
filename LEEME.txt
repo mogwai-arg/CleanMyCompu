@@ -1,0 +1,102 @@
+CleanMyCompu para macOS
+========================
+
+Limpiador de sistema para Mac. Libera espacio, elimina rastros de
+programas viejos, encuentra duplicados, gestiona apps y agentes de inicio.
+
+
+┌────────────────────────────────────────────────────────────┐
+│  INSTALACIÓN — MÉTODO RECOMENDADO (1 clic)                 │
+└────────────────────────────────────────────────────────────┘
+
+Doble clic en el archivo "Instalar.command" que está en este mismo .dmg.
+
+Se abre Terminal por 2 segundos, instala la app en /Applications, y
+la abre automáticamente. Fin.
+
+
+┌────────────────────────────────────────────────────────────┐
+│  INSTALACIÓN — MÉTODO MANUAL                                │
+└────────────────────────────────────────────────────────────┘
+
+1. Arrastrá "CleanMyCompu" al ícono "Applications" que ves al lado.
+2. Abrila desde Launchpad.
+
+
+┌────────────────────────────────────────────────────────────┐
+│  SI MACOS DICE QUE LA APP ESTÁ "DAÑADA"                     │
+└────────────────────────────────────────────────────────────┘
+
+Es una FALSA ALARMA. Pasa porque la app no está firmada con un
+certificado de Apple (que cuesta USD 99/año — no lo pagamos porque
+es de uso personal, no comercial).
+
+Si te aparece un cartel que dice:
+
+    "CleanMyCompu está dañada y no se puede abrir.
+     Deberías mover el elemento a la Papelera."
+
+**NO la muevas a la Papelera.** En lugar de eso:
+
+1. Abrí Terminal (⌘+Espacio → escribí "Terminal" → Enter).
+2. Copiá y pegá esta línea, después Enter:
+
+       xattr -cr /Applications/CleanMyCompu.app
+
+3. Cerrá Terminal y abrí CleanMyCompu desde Launchpad.
+
+Esto quita la marca de "descargado de internet" que Gatekeeper usa
+para bloquear la app. La app NO es peligrosa — solo que sin la firma
+oficial de Apple, macOS es paranoico por default.
+
+Si el método "Instalar.command" del .dmg falló también con ese cartel,
+usá este mismo comando después de haber hecho la instalación manual.
+
+
+┌────────────────────────────────────────────────────────────┐
+│  ¿QUÉ HACE LA APP?                                          │
+└────────────────────────────────────────────────────────────┘
+
+- Sistema: cachés, logs, papelera, miniaturas QuickLook, informes de fallos
+- Navegadores: cachés de Chrome, Safari, Firefox, Edge, Brave
+- Restos de programas: Adobe, Office, instaladores viejos, restos de apps
+  desinstaladas (heurístico), .dmg/.pkg viejos en Descargas
+- Desarrollo: Xcode DerivedData/iOS DeviceSupport, Homebrew, pip, npm
+- Duplicados: encuentra archivos idénticos en Descargas, Documentos,
+  Escritorio, Imágenes, Videos
+- Desinstalador: elimina apps + TODOS sus rastros en ~/Library
+- Archivos grandes: archivos +100 MB no usados hace 6+ meses
+- Elementos de inicio: gestiona LaunchAgents (recomienda cuáles desactivar)
+- Actualizador: actualiza paquetes de Homebrew
+- Memoria: libera RAM inactiva con un clic
+
+Además: la app avisa cuando hay una nueva versión disponible.
+
+
+┌────────────────────────────────────────────────────────────┐
+│  REQUISITOS                                                 │
+└────────────────────────────────────────────────────────────┘
+
+- macOS 13 (Ventura) o superior
+- Universal binary (funciona en Intel y Apple Silicon)
+
+
+┌────────────────────────────────────────────────────────────┐
+│  SEGURIDAD                                                  │
+└────────────────────────────────────────────────────────────┘
+
+- Antes de borrar algo siempre pide confirmación mostrando qué se va
+  a borrar y cuánto se va a liberar.
+- El desinstalador usa "Mover a la Papelera" (recuperable) siempre
+  que puede. Solo usa borrado permanente cuando escalás a admin y
+  macOS te pide tu contraseña.
+- Nunca toca /System ni nada fuera de /Applications y /Library.
+
+
+┌────────────────────────────────────────────────────────────┐
+│  DESINSTALAR CLEANMYCOMPU                                   │
+└────────────────────────────────────────────────────────────┘
+
+Arrastrala de /Applications a la Papelera. No deja rastros importantes
+(solo un archivo chico de configuración en ~/Library/Preferences que
+podés borrar a mano si querés).
