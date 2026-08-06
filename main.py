@@ -38,6 +38,7 @@ import stats
 import permissions
 import performance
 import disk_analyzer
+import app_analyzer
 from confetti import Confetti
 from notifications import notify
 from platform_helpers import is_windows, is_mac, list_all_disks
@@ -132,6 +133,8 @@ SECTIONS = [
      "desc": "Suspender apps que consumen RAM para liberar memoria virtual sin cerrarlas."},
     {"key": "Analizador de disco", "icon": "hard-drive", "menu_group": "HERRAMIENTAS",
      "desc": "Ver qué carpetas ocupan más espacio en tus discos — para entender de dónde vienen esos GB llenos."},
+    {"key": "Análisis inteligente", "icon": "sparkles", "menu_group": "HERRAMIENTAS",
+     "desc": "Identifica apps en AppData (CapCut, DaVinci, Discord...) y te dice qué es seguro borrar sin romper nada."},
     {"key": "Actualizador", "icon": "download", "menu_group": "HERRAMIENTAS",
      "desc": "Verifica y actualiza apps y paquetes instalados via Homebrew.",
      "platform": "darwin"},
@@ -240,6 +243,13 @@ ONBOARDING = {
         "Perfecto para entender por qué te queda tan poco libre — usualmente "
         "se descubren carpetas insospechadas con decenas de GB (caches viejas, "
         "instaladores, videos duplicados, etc.).",
+    ),
+    "Análisis inteligente": (
+        "Limpieza guiada por app",
+        "Escanea tu AppData buscando apps que conozco (CapCut, DaVinci Resolve, Discord, "
+        "Slack, Teams, VS Code, etc.) y te dice EXACTAMENTE qué carpetas internas son "
+        "seguras de borrar sin romper la app. Cada item tiene un badge de riesgo "
+        "(verde = safe, ámbar = con cuidado, rojo = peligroso).",
     ),
 }
 
@@ -421,6 +431,130 @@ class UpdateCheckWorker(QObject):
 
     def run(self):
         self.finished.emit(updater.check_for_update())
+
+
+class SmartAppScanWorker(QObject):
+    """Escanea AppData buscando apps conocidas."""
+    progress = Signal(str)
+    finished = Signal(object)  # list de app dicts
+
+    def run(self):
+        try:
+            apps = app_analyzer.analyze_all(
+                on_progress=lambda m: self.progress.emit(m))
+        except Exception as e:
+            self.progress.emit(f"Error: {e}")
+            apps = []
+        self.finished.emit(apps)
+
+
+class SmartAppRow(QFrame):
+    """
+    Fila de una app detectada por el analizador inteligente.
+    Muestra: nombre + tipo + tamaño total + espacio cleanable + botón limpiar.
+    Expandible para ver los items específicos que se van a borrar.
+    """
+    clean_requested = Signal(object)  # app dict con cleanable_items
+
+    def __init__(self, app: dict):
+        super().__init__()
+        self.setObjectName("category-row")
+        self.app = app
+
+        v = QVBoxLayout(self)
+        v.setContentsMargins(Spacing.LG, Spacing.MD, Spacing.LG, Spacing.MD)
+        v.setSpacing(Spacing.SM)
+
+        # Header: icono + nombre + tamaño + botón
+        head = QHBoxLayout()
+        head.setSpacing(Spacing.MD)
+        icon_lbl = QLabel()
+        icon_lbl.setPixmap(make_icon_pixmap("sparkles", size=22, color=icon_color()))
+        icon_lbl.setFixedSize(28, 28)
+        head.addWidget(icon_lbl)
+
+        col = QVBoxLayout()
+        col.setSpacing(2)
+        title = QLabel(f"{app['name']}")
+        title.setObjectName("row-name")
+        subtitle = QLabel(
+            f"{app['kind']} · Total en AppData: {human_bytes(app['total_size'])} · "
+            f"{len(app['cleanable_items'])} items borrables")
+        subtitle.setObjectName("row-desc")
+        subtitle.setWordWrap(True)
+        col.addWidget(title)
+        col.addWidget(subtitle)
+        head.addLayout(col, stretch=1)
+
+        cleanable = QLabel(human_bytes(app['cleanable_size']))
+        cleanable.setStyleSheet(
+            f"font-size: {Type.LG}px; font-weight: 700; "
+            f"color: {Colors.DANGER_LIGHT}; background: transparent;")
+        cleanable.setMinimumWidth(90)
+        cleanable.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        head.addWidget(cleanable)
+
+        clean_btn = QPushButton(f"Limpiar {human_bytes(app['cleanable_size'])}")
+        clean_btn.setProperty("role", "destructive")
+        clean_btn.setEnabled(app["cleanable_size"] > 0)
+        clean_btn.clicked.connect(lambda: self.clean_requested.emit(app))
+        head.addWidget(clean_btn)
+
+        expand_btn = QPushButton("Ver detalle")
+        expand_btn.setProperty("role", "link")
+        expand_btn.setCursor(Qt.PointingHandCursor)
+        expand_btn.clicked.connect(self._toggle_detail)
+        head.addWidget(expand_btn)
+        self.expand_btn = expand_btn
+
+        v.addLayout(head)
+
+        # Detail area (oculta por default) — lista items con badge de safety
+        self.detail = QFrame()
+        dv = QVBoxLayout(self.detail)
+        dv.setContentsMargins(40, Spacing.SM, 0, 0)
+        dv.setSpacing(Spacing.XS)
+        for item in app["cleanable_items"]:
+            item_row = QFrame()
+            ih = QHBoxLayout(item_row)
+            ih.setContentsMargins(Spacing.SM, 2, Spacing.SM, 2)
+            ih.setSpacing(Spacing.SM)
+            # Badge de safety
+            badge_text = {"safe": "SEGURO", "caution": "CUIDADO",
+                          "dangerous": "PELIGRO"}.get(item["safety"], item["safety"])
+            badge_color = {"safe": Colors.SUCCESS, "caution": "#FF9500",
+                           "dangerous": Colors.DANGER_LIGHT}.get(
+                item["safety"], Colors.WARNING)
+            badge = QLabel(badge_text)
+            badge.setStyleSheet(
+                f"background: {badge_color}; color: white; padding: 2px 8px; "
+                "border-radius: 8px; font-size: 10px; font-weight: 700;")
+            badge.setFixedWidth(70)
+            badge.setAlignment(Qt.AlignCenter)
+            ih.addWidget(badge)
+
+            info = QLabel(f"{Path(item['path']).name}  —  {item['desc']}")
+            info.setObjectName("row-desc")
+            info.setWordWrap(True)
+            info.setToolTip(str(item["path"]))
+            ih.addWidget(info, stretch=1)
+
+            sz = QLabel(human_bytes(item["size"]))
+            sz.setObjectName("row-desc")
+            sz.setMinimumWidth(70)
+            sz.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            ih.addWidget(sz)
+
+            dv.addWidget(item_row)
+        self.detail.setVisible(False)
+        v.addWidget(self.detail)
+
+        self.setMinimumHeight(72)
+
+    def _toggle_detail(self):
+        vis = not self.detail.isVisible()
+        self.detail.setVisible(vis)
+        self.expand_btn.setText("Ocultar detalle" if vis else "Ver detalle")
 
 
 class _DiskScanWorker(QObject):
@@ -1492,6 +1626,7 @@ class MainWindow(QMainWindow):
         self.page_permissions = self._build_permissions_page()
         self.page_performance = self._build_performance_page()
         self.page_disk = self._build_disk_analyzer_page()
+        self.page_smart = self._build_smart_app_page()
         self.perf_rows = []  # inicializar
         self.stack.addWidget(self.page_dashboard)     # 0
         self.stack.addWidget(self.page_categories)    # 1
@@ -1505,6 +1640,7 @@ class MainWindow(QMainWindow):
         self.stack.addWidget(self.page_permissions)   # 9
         self.stack.addWidget(self.page_performance)   # 10
         self.stack.addWidget(self.page_disk)          # 11
+        self.stack.addWidget(self.page_smart)         # 12
         v.addWidget(self.stack, stretch=1)
 
         # Footer
@@ -1747,6 +1883,37 @@ class MainWindow(QMainWindow):
         )
         self.updater_layout.addWidget(self.updater_empty)
         self.updater_layout.addStretch(1)
+        page.setWidget(content)
+        return page
+
+    def _build_smart_app_page(self) -> QWidget:
+        page = QScrollArea()
+        page.setObjectName("detail-scroll")
+        page.setWidgetResizable(True)
+        page.setFrameShape(QFrame.NoFrame)
+        content = QWidget()
+        self.smart_layout = QVBoxLayout(content)
+        self.smart_layout.setContentsMargins(Spacing.XXL, 0, Spacing.XXL, Spacing.XL)
+        self.smart_layout.setSpacing(Spacing.SM)
+
+        # Banner progress inline
+        self.smart_progress = ProgressBanner(cancellable=False)
+        self.smart_progress.setVisible(False)
+        self.smart_layout.addWidget(self.smart_progress)
+
+        self.smart_empty = EmptyState(
+            icon_name="sparkles",
+            title="Análisis inteligente de tus apps",
+            body="Escaneo tu AppData buscando apps que reconozco (CapCut, DaVinci, "
+                 "Discord, Slack, Teams, VS Code, Docker...) y te digo QUÉ ES SEGURO "
+                 "BORRAR de cada una sin romperla. Cada item tiene un badge de riesgo.",
+            action_label="Analizar apps",
+            action_callback=lambda: self.start_smart_scan(),
+        )
+        self.smart_layout.addWidget(self.smart_empty)
+        self.smart_layout.addStretch(1)
+
+        self.smart_rows = []
         page.setWidget(content)
         return page
 
@@ -2352,6 +2519,10 @@ class MainWindow(QMainWindow):
             # Resetear breadcrumb al entrar
             self._disk_path_stack = []
             self.disk_breadcrumb_wrap.setVisible(False)
+        elif section == "Análisis inteligente":
+            self.stack.setCurrentIndex(12)
+            self.action_button.setText("Analizar apps")
+            self.footer.setVisible(False)
         self._update_footer()
 
     def _apply_category_filter(self, group: str):
@@ -2380,6 +2551,7 @@ class MainWindow(QMainWindow):
             "Archivos grandes": lambda: not self.large_rows,
             "Actualizador": lambda: not getattr(self, "updater_rows", []),
             "Rendimiento": lambda: not getattr(self, "perf_rows", []),
+            "Análisis inteligente": lambda: not getattr(self, "smart_rows", []),
         }
         check = empty_when_no_data.get(section)
         should_hide = check() if check else False
@@ -2403,6 +2575,8 @@ class MainWindow(QMainWindow):
             self.free_memory()
         elif s == "Rendimiento":
             self.start_perf_scan()
+        elif s == "Análisis inteligente":
+            self.start_smart_scan()
 
     # ---- Escaneo de categorías ----
 
@@ -3556,6 +3730,111 @@ class MainWindow(QMainWindow):
                subtitle=f"Tenés v{result['current']}")
         # Actualizar sidebar con indicador clickeable de nueva versión
         self.storage_bar.show_update(result["version"], result.get("url", ""))
+
+    # ---- Análisis inteligente (AppData por app conocida) ----
+
+    def start_smart_scan(self):
+        # Limpiar filas previas
+        for r in self.smart_rows:
+            r.setParent(None)
+        self.smart_rows = []
+        self.smart_empty.setVisible(False)
+
+        self.smart_progress.set_title("Analizando apps en AppData…")
+        self.smart_progress.set_detail("Midiendo tamaño de cada app conocida.")
+        self.smart_progress.setVisible(True)
+
+        self.thread = QThread()
+        self.worker = SmartAppScanWorker()
+        self.worker.moveToThread(self.thread)
+        self.thread.started.connect(self.worker.run)
+        self.worker.progress.connect(lambda m: self.smart_progress.set_detail(m))
+        self.worker.finished.connect(self._on_smart_scan_done)
+        self.worker.finished.connect(self.thread.quit)
+        self.worker.finished.connect(self.worker.deleteLater)
+        self.thread.finished.connect(self.thread.deleteLater)
+        self.thread.start()
+
+    def _on_smart_scan_done(self, apps):
+        self.smart_progress.setVisible(False)
+        self.smart_progress.stop()
+        self._refresh_action_button_visibility()
+
+        if not apps:
+            self.smart_empty.set_body(
+                "No detecté apps conocidas en AppData. Puede ser porque no tenés "
+                "ninguna instalada (CapCut, DaVinci, Discord, etc.) o porque este "
+                "no es Windows (por ahora el analizador es Windows-only).")
+            self.smart_empty.setVisible(True)
+            return
+
+        # Insertar filas antes del stretch
+        insert_at = self.smart_layout.count() - 1
+        total_cleanable = 0
+        for a in apps:
+            row = SmartAppRow(a)
+            row.clean_requested.connect(self._on_smart_clean_app)
+            self.smart_layout.insertWidget(insert_at, row)
+            self.smart_rows.append(row)
+            insert_at += 1
+            total_cleanable += a["cleanable_size"]
+        self.statusBar().showMessage(
+            f"{len(apps)} apps detectadas — total recuperable: {human_bytes(total_cleanable)}")
+        self._refresh_action_button_visibility()
+
+    def _on_smart_clean_app(self, app: dict):
+        """Ejecuta el borrado de todos los cleanable_items de una app."""
+        items = app["cleanable_items"]
+        if not items:
+            return
+        # Confirmación
+        confirm_items = [{"name": Path(it["path"]).name,
+                          "icon": "trash", "bytes": it["size"]}
+                         for it in items]
+        dlg = ConfirmCleanDialog(confirm_items, app["cleanable_size"], parent=self)
+        dlg.setWindowTitle(f"Limpiar caché de {app['name']}")
+        if dlg.exec() != QDialog.Accepted:
+            return
+
+        # Ejecutar borrado
+        self.smart_progress.set_title(f"Limpiando {app['name']}…")
+        self.smart_progress.set_detail("")
+        self.smart_progress.setVisible(True)
+        QApplication.processEvents()
+
+        freed = 0
+        for it in items:
+            try:
+                self.smart_progress.set_detail(f"Borrando {Path(it['path']).name}…")
+                QApplication.processEvents()
+                p = Path(it["path"])
+                if p.exists():
+                    sz = it["size"]
+                    if p.is_dir():
+                        import shutil as _sh
+                        _sh.rmtree(p, ignore_errors=True)
+                    else:
+                        p.unlink(missing_ok=True)
+                    if not p.exists():
+                        freed += sz
+            except Exception:
+                pass
+
+        self.smart_progress.setVisible(False)
+        stats.record(f"Smart: {app['name']}", freed)
+        self.storage_bar.refresh()
+        if freed > 0:
+            self._celebrate()
+
+        # Re-scan para refrescar
+        self.start_smart_scan()
+
+        InfoDialog(
+            title=f"Liberaste {human_bytes(freed)}",
+            body=f"Se limpió la caché de {app['name']}. La app sigue funcionando "
+                 "normalmente, solo se borraron datos regenerables.",
+            icon_name="check-circle", icon_color=Colors.SUCCESS, parent=self,
+        ).exec()
 
     # ---- Analizador de disco ----
 
