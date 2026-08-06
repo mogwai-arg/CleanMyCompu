@@ -41,6 +41,7 @@ import disk_analyzer
 import app_analyzer
 import windows_deep_clean
 import user_scan
+import system_monitor
 from confetti import Confetti
 from notifications import notify
 from platform_helpers import is_windows, is_mac, list_all_disks
@@ -148,6 +149,8 @@ SECTIONS = [
     {"key": "Memoria", "icon": "cpu", "menu_group": "HERRAMIENTAS",
      "desc": "Libera RAM inactiva de macOS con un clic. Útil si sentís la Mac lenta.",
      "platform": "darwin"},
+    {"key": "Monitor", "icon": "cpu", "menu_group": "HERRAMIENTAS",
+     "desc": "Salud de tu compu en tiempo real: CPU, RAM, discos, batería, red. Refresca cada 2 segundos."},
     {"key": "Estadísticas", "icon": "clock", "menu_group": "HERRAMIENTAS",
      "desc": "Mira cuánto espacio liberaste con CleanMyCompu a lo largo del tiempo."},
     {"key": "Permisos", "icon": "info", "menu_group": "HERRAMIENTAS",
@@ -208,6 +211,12 @@ ONBOARDING = {
         "Archivos grandes olvidados",
         "Muestra archivos de +100 MB que no abrís hace 6+ meses. Los checkboxes vienen sin marcar "
         "porque acá tenés que revisar uno por uno: puede haber cosas importantes.",
+    ),
+    "Monitor": (
+        "Salud de tu compu en tiempo real",
+        "Widget en vivo con uso de CPU (total + por core), RAM (usada + swap), "
+        "discos (todos los conectados con % de uso), batería (si es laptop) "
+        "y red (tráfico acumulado). Se refresca solo cada 2 segundos.",
     ),
     "Escaneo de Users": (
         "Los grandes ocultos en tu carpeta de usuario",
@@ -885,6 +894,83 @@ class LargeFileRow(QFrame):
 
     def is_selected(self) -> bool:
         return self.checkbox.isChecked()
+
+
+class MonitorStatCard(QFrame):
+    """
+    Card grande con métrica del monitor: label + valor grande + barra + subtítulo.
+    Se actualiza vía set_value().
+    """
+    def __init__(self, title: str, icon: str = "cpu"):
+        super().__init__()
+        self.setObjectName("category-row")
+        v = QVBoxLayout(self)
+        v.setContentsMargins(Spacing.LG, Spacing.MD, Spacing.LG, Spacing.MD)
+        v.setSpacing(Spacing.XS)
+
+        head = QHBoxLayout()
+        head.setSpacing(Spacing.SM)
+        ic = QLabel()
+        ic.setPixmap(make_icon_pixmap(icon, size=18, color=icon_color()))
+        ic.setFixedSize(24, 24)
+        head.addWidget(ic)
+        self.title_lbl = QLabel(title)
+        self.title_lbl.setStyleSheet(
+            f"font-size: {Type.SM}px; font-weight: 600; "
+            f"color: {Colors.TEXT_SUBTLE};")
+        head.addWidget(self.title_lbl, stretch=1)
+        v.addLayout(head)
+
+        self.value_lbl = QLabel("—")
+        self.value_lbl.setStyleSheet(
+            f"font-size: 32px; font-weight: 700; color: {Colors.TEXT_LIGHT if not is_dark_mode() else Colors.TEXT_DARK};")
+        v.addWidget(self.value_lbl)
+
+        self.bar = QProgressBar()
+        self.bar.setMinimum(0)
+        self.bar.setMaximum(100)
+        self.bar.setValue(0)
+        self.bar.setTextVisible(False)
+        self.bar.setFixedHeight(8)
+        self.bar.setStyleSheet(f"""
+            QProgressBar {{
+                background: {Colors.BORDER_DARK if is_dark_mode() else Colors.BORDER_LIGHT};
+                border: none; border-radius: 4px;
+            }}
+            QProgressBar::chunk {{
+                background: {Colors.SUCCESS};
+                border-radius: 4px;
+            }}
+        """)
+        v.addWidget(self.bar)
+
+        self.subtitle_lbl = QLabel("")
+        self.subtitle_lbl.setObjectName("row-desc")
+        self.subtitle_lbl.setWordWrap(True)
+        v.addWidget(self.subtitle_lbl)
+
+    def set_value(self, big_value: str, percent: int, subtitle: str = ""):
+        self.value_lbl.setText(big_value)
+        pct = max(0, min(100, int(percent)))
+        self.bar.setValue(pct)
+        # Color según nivel: verde <70, ámbar 70-90, rojo >90
+        if pct < 70:
+            color = Colors.SUCCESS
+        elif pct < 90:
+            color = Colors.WARNING
+        else:
+            color = Colors.DANGER_LIGHT
+        self.bar.setStyleSheet(f"""
+            QProgressBar {{
+                background: {Colors.BORDER_DARK if is_dark_mode() else Colors.BORDER_LIGHT};
+                border: none; border-radius: 4px;
+            }}
+            QProgressBar::chunk {{
+                background: {color};
+                border-radius: 4px;
+            }}
+        """)
+        self.subtitle_lbl.setText(subtitle)
 
 
 class UserScanCard(QFrame):
@@ -1824,6 +1910,7 @@ class MainWindow(QMainWindow):
         self.page_smart = self._build_smart_app_page()
         self.page_windows_clean = self._build_windows_clean_page()
         self.page_user_scan = self._build_user_scan_page()
+        self.page_monitor = self._build_monitor_page()
         self.perf_rows = []  # inicializar
         self.stack.addWidget(self.page_dashboard)     # 0
         self.stack.addWidget(self.page_categories)    # 1
@@ -1840,6 +1927,7 @@ class MainWindow(QMainWindow):
         self.stack.addWidget(self.page_smart)         # 12
         self.stack.addWidget(self.page_windows_clean) # 13
         self.stack.addWidget(self.page_user_scan)     # 14
+        self.stack.addWidget(self.page_monitor)       # 15
         v.addWidget(self.stack, stretch=1)
 
         # Footer
@@ -2795,6 +2883,148 @@ class MainWindow(QMainWindow):
         self._celebrate()
         self.start_user_scan()
 
+    def _build_monitor_page(self) -> QWidget:
+        page = QScrollArea()
+        page.setObjectName("detail-scroll")
+        page.setWidgetResizable(True)
+        page.setFrameShape(QFrame.NoFrame)
+        content = QWidget()
+        self.monitor_layout = QVBoxLayout(content)
+        self.monitor_layout.setContentsMargins(Spacing.XXL, 0, Spacing.XXL, Spacing.XL)
+        self.monitor_layout.setSpacing(Spacing.MD)
+
+        # Grid: CPU + RAM en fila 1, Batería (si laptop) en fila 2
+        top_row = QHBoxLayout()
+        top_row.setSpacing(Spacing.MD)
+        self.mon_cpu = MonitorStatCard("CPU", icon="cpu")
+        self.mon_ram = MonitorStatCard("Memoria RAM", icon="cpu")
+        top_row.addWidget(self.mon_cpu, stretch=1)
+        top_row.addWidget(self.mon_ram, stretch=1)
+        self.monitor_layout.addLayout(top_row)
+
+        # Batería (solo si existe — la ocultamos si no hay)
+        self.mon_battery = MonitorStatCard("Batería", icon="power")
+        self.monitor_layout.addWidget(self.mon_battery)
+
+        # Sección discos
+        disks_title = QLabel("Discos conectados")
+        disks_title.setStyleSheet(
+            f"font-size: {Type.LG}px; font-weight: 700; "
+            f"color: {Colors.TEXT_DARK if is_dark_mode() else Colors.TEXT_LIGHT}; "
+            f"padding-top: {Spacing.MD}px;")
+        self.monitor_layout.addWidget(disks_title)
+
+        self.mon_disks_container = QVBoxLayout()
+        self.mon_disks_container.setSpacing(Spacing.SM)
+        self.monitor_layout.addLayout(self.mon_disks_container)
+        self.mon_disk_cards = []  # se llenan/actualizan en refresh
+
+        # Info del sistema
+        self.mon_sysinfo = QLabel("")
+        self.mon_sysinfo.setObjectName("row-desc")
+        self.mon_sysinfo.setStyleSheet(
+            f"padding-top: {Spacing.LG}px; color: {Colors.TEXT_SUBTLE};")
+        self.mon_sysinfo.setWordWrap(True)
+        self.monitor_layout.addWidget(self.mon_sysinfo)
+
+        self.monitor_layout.addStretch(1)
+        page.setWidget(content)
+
+        # Timer (creado pero no iniciado)
+        self._monitor_timer = QTimer(self)
+        self._monitor_timer.setInterval(2000)  # 2 seg
+        self._monitor_timer.timeout.connect(self._refresh_monitor)
+
+        return page
+
+    def _start_monitor_timer(self):
+        if not self._monitor_timer.isActive():
+            self._monitor_timer.start()
+        # Un refresh inmediato al entrar
+        self._refresh_monitor()
+
+    def _stop_monitor_timer(self):
+        if self._monitor_timer.isActive():
+            self._monitor_timer.stop()
+
+    def _refresh_monitor(self):
+        # CPU
+        cpu = system_monitor.get_cpu()
+        freq_txt = f" @ {cpu['freq_mhz']/1000:.1f} GHz" if cpu["freq_mhz"] else ""
+        self.mon_cpu.set_value(
+            big_value=f"{cpu['percent']:.0f}%",
+            percent=cpu["percent"],
+            subtitle=f"{cpu['count']} cores lógicos · {cpu['physical_count']} físicos{freq_txt}",
+        )
+
+        # RAM
+        ram = system_monitor.get_ram()
+        ram_gb = ram["used"] / 1024 ** 3
+        ram_total_gb = ram["total"] / 1024 ** 3
+        swap_txt = ""
+        if ram["swap_total"] > 0 and ram["swap_percent"] > 0:
+            swap_used_gb = ram["swap_used"] / 1024 ** 3
+            swap_txt = f" · Swap: {swap_used_gb:.1f} GB ({ram['swap_percent']:.0f}%)"
+        self.mon_ram.set_value(
+            big_value=f"{ram['percent']:.0f}%",
+            percent=ram["percent"],
+            subtitle=f"{ram_gb:.1f} GB usados de {ram_total_gb:.1f} GB{swap_txt}",
+        )
+
+        # Batería
+        bat = system_monitor.get_battery()
+        if bat is None:
+            self.mon_battery.setVisible(False)
+        else:
+            self.mon_battery.setVisible(True)
+            plug_txt = "🔌 Cargando" if bat["plugged"] else "🔋 En batería"
+            time_txt = ""
+            if bat["seconds_left"] is not None:
+                h = bat["seconds_left"] // 3600
+                m = (bat["seconds_left"] % 3600) // 60
+                time_txt = f" · queda: {h}h {m}m"
+            # Batería: para el color invertimos (100% = full = verde, 20% = rojo)
+            self.mon_battery.set_value(
+                big_value=f"{bat['percent']:.0f}%",
+                percent=100 - bat["percent"],  # invertido para que rojo sea "baja"
+                subtitle=f"{plug_txt}{time_txt}",
+            )
+
+        # Discos — regenerar cards si cambió el número
+        disks = system_monitor.get_disks()
+        # Limpiar existentes si cambió cantidad
+        if len(self.mon_disk_cards) != len(disks):
+            for c in self.mon_disk_cards:
+                c.setParent(None)
+            self.mon_disk_cards = []
+            for _ in disks:
+                card = MonitorStatCard("", icon="hard-drive")
+                self.mon_disks_container.addWidget(card)
+                self.mon_disk_cards.append(card)
+        for card, d in zip(self.mon_disk_cards, disks):
+            free_gb = d["free"] / 1024 ** 3
+            total_gb = d["total"] / 1024 ** 3
+            card.title_lbl.setText(f"{d['device']}  ·  {d['mountpoint']}")
+            card.set_value(
+                big_value=f"{d['percent']:.0f}%",
+                percent=d["percent"],
+                subtitle=f"{free_gb:.1f} GB libres de {total_gb:.1f} GB",
+            )
+
+        # Info del sistema
+        boot_ts = system_monitor.get_boot_time()
+        if boot_ts:
+            uptime_secs = int(datetime.now().timestamp()) - boot_ts
+            days = uptime_secs // 86400
+            hours = (uptime_secs % 86400) // 3600
+            uptime_txt = f"{days}d {hours}h" if days else f"{hours}h"
+        else:
+            uptime_txt = "—"
+        procs = system_monitor.get_process_count()
+        self.mon_sysinfo.setText(
+            f"Uptime: {uptime_txt}  ·  Procesos activos: {procs}"
+        )
+
     def _build_disk_analyzer_page(self) -> QWidget:
         page = QScrollArea()
         page.setObjectName("detail-scroll")
@@ -3416,6 +3646,11 @@ class MainWindow(QMainWindow):
             self.footer.setVisible(False)
             if not getattr(self, "userscan_cards", []):
                 self.start_user_scan()
+        elif section == "Monitor":
+            self.stack.setCurrentIndex(15)
+            self.action_button.setVisible(False)
+            self.footer.setVisible(False)
+            self._start_monitor_timer()
         self._update_footer()
 
     def _apply_category_filter(self, group: str):
