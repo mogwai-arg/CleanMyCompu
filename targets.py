@@ -605,6 +605,169 @@ CATEGORIES_WINDOWS = [
         ],
         "safety": "safe",
     },
+    # -------- Caches de apps de video (SUELEN OCUPAR MUCHOS GB) --------
+    {
+        "id": "windows_capcut_cache",
+        "group": "Restos de programas",
+        "name": "Caché de CapCut (editor de video)",
+        "icon": "palette",
+        "description": (
+            "Renders, previews y cachés temporales de CapCut. Se regeneran al abrir "
+            "cada proyecto. Suele ocupar decenas de GB en usuarios activos."
+        ),
+        "path_patterns": [
+            "%LOCALAPPDATA%\\CapCut\\User Data\\*\\Cache",
+            "%LOCALAPPDATA%\\CapCut\\User Data\\*\\Code Cache",
+            "%LOCALAPPDATA%\\CapCut\\User Data\\*\\CachedFiles",
+            "%LOCALAPPDATA%\\CapCut\\User Data\\*\\DraftCache",
+            "%LOCALAPPDATA%\\CapCut\\User Data\\*\\preview_files",
+            "%LOCALAPPDATA%\\CapCut\\User Data\\*\\CacheStorage",
+            "%LOCALAPPDATA%\\CapCut\\User Data\\*\\GPUCache",
+            "%LOCALAPPDATA%\\CapCut\\Live\\CacheData",
+            "%LOCALAPPDATA%\\CapCut\\Apps\\*\\Cache",
+        ],
+        "safety": "safe",
+    },
+    {
+        "id": "windows_davinci_cache",
+        "group": "Restos de programas",
+        "name": "Caché de DaVinci Resolve",
+        "icon": "palette",
+        "description": (
+            "Cachés y previews de DaVinci Resolve. Se regeneran al abrir proyectos. "
+            "Cerrá Resolve antes de limpiar."
+        ),
+        "path_patterns": [
+            "%LOCALAPPDATA%\\Blackmagic Design\\DaVinci Resolve\\CacheClip",
+            "%APPDATA%\\Blackmagic Design\\DaVinci Resolve\\Support\\Fusion\\Cache",
+            "%APPDATA%\\Blackmagic Design\\DaVinci Resolve\\Logs",
+        ],
+        "safety": "safe",
+    },
+    {
+        "id": "windows_premiere_cache",
+        "group": "Restos de programas",
+        "name": "Media Cache de Adobe Premiere / After Effects",
+        "icon": "palette",
+        "description": (
+            "Cache de medios de Premiere Pro y After Effects. Se regenera al reabrir "
+            "los proyectos. Puede ocupar GB si editás mucho."
+        ),
+        "path_patterns": [
+            "%USERPROFILE%\\Documents\\Adobe\\Premiere Pro\\*\\Media Cache Files",
+            "%USERPROFILE%\\Documents\\Adobe\\Premiere Pro\\*\\Media Cache",
+            "%USERPROFILE%\\Documents\\Adobe\\Common\\Media Cache Files",
+            "%USERPROFILE%\\Documents\\Adobe\\Common\\Media Cache",
+            "%USERPROFILE%\\Documents\\Adobe\\After Effects*\\Disk Cache*",
+            "%APPDATA%\\Adobe\\Common\\Media Cache Files",
+        ],
+        "safety": "safe",
+    },
+    # -------- Comunicación --------
+    {
+        "id": "windows_teams_cache",
+        "group": "Restos de programas",
+        "name": "Caché de Microsoft Teams",
+        "icon": "file-text",
+        "description": "Cache de mensajes/imágenes de Teams. Cerrá Teams antes de limpiar.",
+        "path_patterns": [
+            "%APPDATA%\\Microsoft\\Teams\\Cache",
+            "%APPDATA%\\Microsoft\\Teams\\Code Cache",
+            "%APPDATA%\\Microsoft\\Teams\\GPUCache",
+            "%APPDATA%\\Microsoft\\Teams\\Service Worker\\CacheStorage",
+            "%LOCALAPPDATA%\\Packages\\MSTeams_*\\LocalCache",
+        ],
+        "safety": "safe",
+    },
+    {
+        "id": "windows_slack_cache",
+        "group": "Restos de programas",
+        "name": "Caché de Slack",
+        "icon": "file-text",
+        "description": "Cache de canales/imágenes de Slack. Cerrá Slack antes de limpiar.",
+        "path_patterns": [
+            "%APPDATA%\\Slack\\Cache",
+            "%APPDATA%\\Slack\\Code Cache",
+            "%APPDATA%\\Slack\\GPUCache",
+            "%APPDATA%\\Slack\\Service Worker\\CacheStorage",
+        ],
+        "safety": "safe",
+    },
+    # -------- Cloud storage caches --------
+    {
+        "id": "windows_dropbox_cache",
+        "group": "Restos de programas",
+        "name": "Caché de Dropbox",
+        "icon": "hard-drive",
+        "description": (
+            "Cache temporal de descarga de Dropbox. Se regenera. Cerrá Dropbox si querés "
+            "limpiar todo."
+        ),
+        "path_patterns": [
+            "%LOCALAPPDATA%\\Dropbox\\cache",
+            "%LOCALAPPDATA%\\Dropbox\\l\\storage",
+            "%LOCALAPPDATA%\\Dropbox\\instance*\\logs",
+        ],
+        "safety": "safe",
+    },
+    {
+        "id": "windows_google_drive_cache",
+        "group": "Restos de programas",
+        "name": "Caché de Google Drive (Streaming)",
+        "icon": "hard-drive",
+        "description": (
+            "Archivos en caché de Google Drive Streaming (offline). Al limpiar podés perder "
+            "acceso rápido a archivos hasta que se re-descarguen."
+        ),
+        "path_patterns": [
+            "%LOCALAPPDATA%\\Google\\DriveFS\\Logs",
+        ],
+        "safety": "caution",
+    },
+    # -------- Dev tools --------
+    {
+        "id": "windows_vscode_cache",
+        "group": "Desarrollo",
+        "name": "VS Code: caches y logs",
+        "icon": "code",
+        "description": "Caches y logs de VS Code. Se regeneran, tu configuración queda intacta.",
+        "path_patterns": [
+            "%APPDATA%\\Code\\Cache",
+            "%APPDATA%\\Code\\Code Cache",
+            "%APPDATA%\\Code\\GPUCache",
+            "%APPDATA%\\Code\\logs",
+            "%APPDATA%\\Code\\CachedData",
+            "%APPDATA%\\Code\\Service Worker\\CacheStorage",
+        ],
+        "safety": "safe",
+    },
+    {
+        "id": "windows_docker_logs",
+        "group": "Desarrollo",
+        "name": "Docker Desktop: logs",
+        "icon": "code",
+        "description": "Logs de Docker Desktop. No toca las imágenes ni containers.",
+        "path_patterns": [
+            "%LOCALAPPDATA%\\Docker\\log",
+            "%APPDATA%\\Docker\\log",
+        ],
+        "safety": "safe",
+    },
+    # -------- Streaming --------
+    {
+        "id": "windows_obs_cache",
+        "group": "Restos de programas",
+        "name": "Logs de OBS Studio",
+        "icon": "file-text",
+        "description": (
+            "Logs de OBS. NO toca tus grabaciones (esas están en Videos por default)."
+        ),
+        "path_patterns": [
+            "%APPDATA%\\obs-studio\\logs",
+            "%APPDATA%\\obs-studio\\crashes",
+        ],
+        "safety": "safe",
+    },
     {
         "id": "windows_old_downloads",
         "group": "Restos de programas",
