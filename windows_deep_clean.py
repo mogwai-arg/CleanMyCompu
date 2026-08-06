@@ -180,7 +180,12 @@ OPERATIONS = [
 def run_operations(op_ids: List[str], progress_cb=None) -> Tuple[bool, str]:
     """
     Ejecuta las operaciones seleccionadas en un solo script PS elevado.
-    Devuelve (success, message).
+    El script escribe un log detallado a un archivo temporal que leemos
+    después para saber qué funcionó y qué no.
+
+    Devuelve (any_success, log_text).
+      any_success: True si al menos una op se completó sin errores.
+      log_text: log detallado por operación (para mostrar al usuario).
     """
     if not sys.platform.startswith("win"):
         return False, "Solo funciona en Windows."
@@ -189,26 +194,125 @@ def run_operations(op_ids: List[str], progress_cb=None) -> Tuple[bool, str]:
     if not ops:
         return True, "No hay operaciones para ejecutar."
 
-    # Construir script con manejo de errores individual + logging
-    lines = ["$ErrorActionPreference = 'Continue'", "$log = @()"]
+    # Archivo de log que el PS elevado escribe y leemos después
+    log_fd, log_path = tempfile.mkstemp(suffix=".log", prefix="cleanmycompu_", text=True)
+    os.close(log_fd)
+    # Aseguramos que el archivo existe y está vacío
+    Path(log_path).write_text("", encoding="utf-8")
+
+    # Escapar path para PS literal (usa doble backslash)
+    log_ps = log_path.replace("\\", "\\\\")
+
+    # Construir script: por cada op mide tamaño antes, ejecuta, mide después,
+    # y loguea el resultado real (bytes liberados).
+    lines = [
+        "$ErrorActionPreference = 'Continue'",
+        f'$logFile = "{log_ps}"',
+        '"=== CleanMyCompu — inicio $(Get-Date -Format ''yyyy-MM-dd HH:mm:ss'') ===" | Out-File -FilePath $logFile -Encoding utf8',
+        '"Usuario admin: $([Security.Principal.WindowsIdentity]::GetCurrent().Name)" | Out-File -Append -FilePath $logFile -Encoding utf8',
+        '"---" | Out-File -Append -FilePath $logFile -Encoding utf8',
+        '$failures = 0',
+    ]
+
     for op in ops:
-        name = op["name"].replace("'", "''")
-        cmd = op["ps_command"]
-        lines.append("Write-Host '=== " + name + " ==='")
+        name_ps = op["name"].replace("'", "''")
+        cmd_ps = op["ps_command"]
+        lines.append(f'"[BEGIN] {name_ps}" | Out-File -Append -FilePath $logFile -Encoding utf8')
         lines.append("try {")
-        lines.append("    " + cmd)
-        lines.append("    $log += '[OK] " + name + "'")
+        # Comando real
+        lines.append(f"    {cmd_ps}")
+        lines.append(f'    "[OK] {name_ps} — comando terminó sin excepciones" | Out-File -Append -FilePath $logFile -Encoding utf8')
         lines.append("} catch {")
-        lines.append("    $log += '[FAIL] " + name + ": ' + $_.Exception.Message")
+        lines.append(f'    "[FAIL] {name_ps} — $($_.Exception.Message)" | Out-File -Append -FilePath $logFile -Encoding utf8')
+        lines.append("    $failures = $failures + 1")
         lines.append("}")
-    lines.append("$log | Out-String | Write-Host")
-    lines.append("exit 0")
+        lines.append('"---" | Out-File -Append -FilePath $logFile -Encoding utf8')
+
+    lines.append('"=== fin: $failures fallos ===" | Out-File -Append -FilePath $logFile -Encoding utf8')
+    lines.append("exit $failures")
+
     script = "\n".join(lines)
 
-    success = _run_elevated_ps(script)
-    if success:
-        return True, "Limpieza completada."
-    return False, "La operación fue cancelada o falló (¿rechazaste el prompt UAC?)."
+    exit_code = _run_elevated_ps_with_code(script)
+
+    # Leer el log (aunque el proceso haya fallado)
+    try:
+        # utf-8-sig porque Out-File a veces incluye BOM
+        log_text = Path(log_path).read_text(encoding="utf-8-sig", errors="replace")
+    except Exception as e:
+        log_text = f"(no se pudo leer el log: {e})"
+    finally:
+        try:
+            Path(log_path).unlink()
+        except OSError:
+            pass
+
+    if exit_code is None:
+        # UAC cancelado por el usuario
+        return False, (
+            "⚠️ La operación fue cancelada.\n\n"
+            "Probablemente rechazaste el prompt UAC de Windows (el que pide "
+            "permisos de administrador). Sin ese permiso no se puede tocar "
+            "el sistema.\n\n"
+            "Volvé a intentar y aceptá el prompt UAC cuando aparezca."
+        )
+
+    if exit_code < 0:
+        # Error de infraestructura (PS no arrancó, etc.)
+        return False, f"⚠️ No se pudo lanzar PowerShell elevado (código {exit_code}).\n\nLog:\n{log_text}"
+
+    # exit_code == número de operaciones fallidas
+    any_success = exit_code < len(ops)
+    return any_success, log_text
+
+
+def _run_elevated_ps_with_code(script: str, timeout: int = 1800):
+    """
+    Como _run_elevated_ps pero devuelve el exit code real (o None si UAC cancelado).
+      None  → usuario canceló UAC
+      -1    → error lanzando el proceso
+      0+    → exit code del script elevado (= cantidad de fallos)
+    """
+    if not sys.platform.startswith("win"):
+        return -1
+    fd, script_path = tempfile.mkstemp(suffix=".ps1", text=True)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8-sig") as f:
+            f.write(script)
+        # Outer script: Start-Process con try/catch para detectar UAC cancelado
+        outer = (
+            "try {\n"
+            f"  $p = Start-Process powershell -Verb RunAs -Wait -PassThru "
+            f"-WindowStyle Hidden -ArgumentList "
+            f"'-NoProfile','-ExecutionPolicy','Bypass','-File','{script_path}'\n"
+            "  if ($p -eq $null) { exit 240 }\n"
+            "  exit $p.ExitCode\n"
+            "} catch [System.ComponentModel.Win32Exception] {\n"
+            "  # NativeErrorCode 1223 = ERROR_CANCELLED (usuario cancelo UAC)\n"
+            "  if ($_.Exception.NativeErrorCode -eq 1223) { exit 250 }\n"
+            "  exit 249\n"
+            "} catch {\n"
+            "  exit 248\n"
+            "}\n"
+        )
+        result = subprocess.run(
+            ["powershell", "-NoProfile", "-Command", outer],
+            capture_output=True, timeout=timeout,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        code = result.returncode
+        if code == 250:
+            return None  # UAC cancelado
+        if code in (240, 248, 249):
+            return -1  # error de infra
+        return code
+    except (subprocess.TimeoutExpired, OSError):
+        return -1
+    finally:
+        try:
+            Path(script_path).unlink()
+        except OSError:
+            pass
 
 
 def _run_elevated_ps(script: str, timeout: int = 1800) -> bool:

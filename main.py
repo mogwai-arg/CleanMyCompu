@@ -15,7 +15,7 @@ from PySide6.QtWidgets import (
     QPushButton, QLabel, QCheckBox, QScrollArea, QFrame, QListWidget,
     QListWidgetItem, QProgressBar, QStatusBar, QStackedWidget, QDialog,
     QGraphicsOpacityEffect, QGraphicsDropShadowEffect, QMessageBox, QLineEdit,
-    QComboBox,
+    QComboBox, QTextEdit,
 )
 from PySide6.QtGui import QColor
 
@@ -2245,52 +2245,162 @@ class MainWindow(QMainWindow):
         if not selected:
             return
         op_ids = [r.op["id"] for r in selected]
-        total = sum(r.op["size"] for r in selected)
-        any_caution = any(r.op["safety"] == "caution" for r in selected)
+        total_estimated = sum(r.op["size"] for r in selected)
 
         # Confirmación
         confirm_items = [{"name": r.op["name"], "icon": "sparkles",
                           "bytes": r.op["size"]} for r in selected]
-        dlg = ConfirmCleanDialog(confirm_items, total, parent=self)
+        dlg = ConfirmCleanDialog(confirm_items, total_estimated, parent=self)
         dlg.setWindowTitle("Confirmar limpieza avanzada")
         if dlg.exec() != QDialog.Accepted:
             return
 
-        # Ejecutar (bloqueante — el UAC se maneja solo, y las ops son rápidas
-        # salvo dism que puede tardar bastante)
-        self.winclean_progress.set_title("Ejecutando limpieza…")
-        self.winclean_progress.set_detail(
-            "Windows te va a pedir permisos de administrador (UAC). "
-            "Aceptá el prompt. Si incluiste 'Component Store', puede tardar 10-30 min."
-        )
+        # Medir tamaños ANTES (para calcular delta real)
+        self.winclean_progress.set_title("Midiendo tamaños ANTES de limpiar…")
+        self.winclean_progress.set_detail("Para saber cuánto se liberó realmente.")
         self.winclean_progress.setVisible(True)
         QApplication.processEvents()
 
-        success, msg = windows_deep_clean.run_operations(op_ids)
+        sizes_before = {}
+        for r in selected:
+            op_full = next((o for o in windows_deep_clean.OPERATIONS
+                            if o["id"] == r.op["id"]), None)
+            if op_full:
+                try:
+                    sizes_before[r.op["id"]] = op_full["estimate_fn"]()
+                except Exception:
+                    sizes_before[r.op["id"]] = r.op["size"]
+
+        self.winclean_progress.set_title("Ejecutando limpieza…")
+        self.winclean_progress.set_detail(
+            "Windows te va a pedir permisos de administrador (UAC). "
+            "Aceptá el prompt. Si incluiste 'Component Store' o 'WinSxS', "
+            "puede tardar 10-30 min — NO cierres esta ventana."
+        )
+        QApplication.processEvents()
+
+        success, log_text = windows_deep_clean.run_operations(op_ids)
+
+        # Medir tamaños DESPUÉS
+        self.winclean_progress.set_title("Midiendo tamaños DESPUÉS…")
+        self.winclean_progress.set_detail("Calculando espacio real liberado.")
+        QApplication.processEvents()
+
+        sizes_after = {}
+        real_freed = 0
+        details_lines = []
+        for r in selected:
+            op_full = next((o for o in windows_deep_clean.OPERATIONS
+                            if o["id"] == r.op["id"]), None)
+            before = sizes_before.get(r.op["id"], 0)
+            after = 0
+            if op_full:
+                try:
+                    after = op_full["estimate_fn"]()
+                except Exception:
+                    after = before
+            sizes_after[r.op["id"]] = after
+            delta = max(0, before - after)
+            real_freed += delta
+            status = "✓" if delta > 0 else "✗"
+            details_lines.append(
+                f"{status} {r.op['name']}: {human_bytes(before)} → "
+                f"{human_bytes(after)}   (liberó {human_bytes(delta)})"
+            )
 
         self.winclean_progress.setVisible(False)
 
-        if success:
-            stats.record("Limpieza Windows", total)
+        # Registrar estadística REAL, no la estimada
+        if real_freed > 0:
+            stats.record("Limpieza Windows", real_freed)
             self.storage_bar.refresh()
             self._celebrate()
-            InfoDialog(
-                title=f"Limpieza completada",
-                body=f"Se ejecutaron {len(selected)} operaciones. Estimación: "
-                     f"~{human_bytes(total)} liberados. Recargá los tamaños para ver "
-                     "el resultado real.",
-                icon_name="check-circle", icon_color=Colors.SUCCESS, parent=self,
-            ).exec()
-            # Re-escanear para mostrar los tamaños actualizados
-            self.start_windows_clean_scan()
+
+        # Dialog con log detallado
+        summary = "\n".join(details_lines)
+        full_report = (
+            f"Estimado: ~{human_bytes(total_estimated)}\n"
+            f"Real liberado: {human_bytes(real_freed)}\n"
+            "\n"
+            "═══ Detalle por operación ═══\n"
+            f"{summary}\n"
+            "\n"
+            "═══ Log completo del script elevado ═══\n"
+            f"{log_text}"
+        )
+
+        if not success:
+            title = "No se pudo completar"
+            icon = "alert-triangle"
+            color = Colors.WARNING
+        elif real_freed == 0:
+            title = "El script corrió pero no liberó espacio"
+            icon = "alert-triangle"
+            color = Colors.WARNING
+        elif real_freed < total_estimated * 0.3:
+            title = f"Se liberaron {human_bytes(real_freed)} (menos que lo estimado)"
+            icon = "info"
+            color = Colors.SUCCESS
         else:
-            InfoDialog(
-                title="No se completó",
-                body=msg or "La operación se canceló o falló. Si rechazaste el prompt "
-                            "UAC, aceptalo la próxima vez. Si el problema persiste, "
-                            "probá una operación por vez.",
-                icon_name="alert-triangle", icon_color=Colors.WARNING, parent=self,
-            ).exec()
+            title = f"¡Liberaste {human_bytes(real_freed)}!"
+            icon = "check-circle"
+            color = Colors.SUCCESS
+
+        self._show_windows_clean_report(title, icon, color, full_report)
+        self.start_windows_clean_scan()
+
+    def _show_windows_clean_report(self, title, icon_name, icon_color, report_text):
+        """Dialog con textarea grande para mostrar el log completo."""
+        dlg = QDialog(self)
+        dlg.setWindowTitle(title)
+        dlg.setModal(True)
+        dlg.resize(720, 520)
+
+        v = QVBoxLayout(dlg)
+        v.setContentsMargins(Spacing.XL, Spacing.XL, Spacing.XL, Spacing.XL)
+        v.setSpacing(Spacing.MD)
+
+        # Header con ícono
+        header = QHBoxLayout()
+        ic = QLabel()
+        ic.setPixmap(make_icon_pixmap(icon_name, size=32, color=icon_color))
+        ic.setFixedSize(40, 40)
+        header.addWidget(ic)
+        tl = QLabel(title)
+        text_col = Colors.TEXT_DARK if is_dark_mode() else Colors.TEXT_LIGHT
+        tl.setStyleSheet(
+            f"font-size: {Type.LG}px; font-weight: 700; color: {text_col};")
+        tl.setWordWrap(True)
+        header.addWidget(tl, stretch=1)
+        v.addLayout(header)
+
+        hint = QLabel(
+            "Revisá el log si algo no funcionó. Los '[FAIL]' indican qué operación "
+            "tuvo problemas (típicamente por archivos en uso o servicios que "
+            "no se pudieron detener).")
+        hint.setWordWrap(True)
+        hint.setObjectName("row-desc")
+        v.addWidget(hint)
+
+        # Textarea con el log
+        ta = QTextEdit()
+        ta.setPlainText(report_text)
+        ta.setReadOnly(True)
+        ta.setFont(QFont("Consolas" if sys.platform.startswith("win")
+                         else "Menlo", 9))
+        surf = Colors.SURFACE_DARK if is_dark_mode() else Colors.SURFACE_LIGHT
+        bord = Colors.BORDER_DARK if is_dark_mode() else Colors.BORDER_LIGHT
+        ta.setStyleSheet(
+            f"background: {surf}; border: 1px solid {bord}; "
+            "border-radius: 8px; padding: 8px;")
+        v.addWidget(ta, stretch=1)
+
+        # Botón cerrar
+        btn = QPushButton("Cerrar")
+        btn.setProperty("role", "primary")
+        btn.clicked.connect(dlg.accept)
+        v.addWidget(btn)
+        dlg.exec()
 
     def _build_user_scan_page(self) -> QWidget:
         page = QScrollArea()
