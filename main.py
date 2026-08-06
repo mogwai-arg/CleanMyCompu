@@ -203,10 +203,11 @@ ONBOARDING = {
         "porque acá tenés que revisar uno por uno: puede haber cosas importantes.",
     ),
     "Elementos de inicio": (
-        "Agentes que arrancan con tu Mac",
+        "Programas que arrancan con tu compu",
         "Los marcados con badge naranja 'RECOMENDADO DESACTIVAR' son bloatware conocido "
-        "(Adobe schedulers, Google Updater, etc.) que podés apagar sin miedo. Desactivar es "
-        "reversible; quitar es permanente.",
+        "(Adobe, HP, Google Updater, Edge autolaunch, etc.) que podés apagar sin miedo. "
+        "Desactivar es reversible; quitar es permanente. Si un ítem vive en HKLM (todo el "
+        "sistema), Windows pedirá permisos de administrador (una ventana UAC).",
     ),
     "Actualizador": (
         "Actualiza paquetes de Homebrew",
