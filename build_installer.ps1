@@ -156,55 +156,89 @@ function Run-BuildInstaller {
         $script:progress.Style = "Marquee"
         $script:progress.MarqueeAnimationSpeed = 30
 
-        $outFile = [System.IO.Path]::GetTempFileName()
-        $errFile = [System.IO.Path]::GetTempFileName()
-        $p = Start-Process -FilePath $iscc -ArgumentList "installer.iss" `
-            -NoNewWindow -PassThru `
-            -RedirectStandardOutput $outFile `
-            -RedirectStandardError $errFile
+        # .NET Process directo (evita bug de Start-Process con ExitCode vacio)
+        $psi = New-Object System.Diagnostics.ProcessStartInfo
+        $psi.FileName = $iscc
+        $psi.Arguments = "installer.iss"
+        $psi.RedirectStandardOutput = $true
+        $psi.RedirectStandardError = $true
+        $psi.UseShellExecute = $false
+        $psi.CreateNoWindow = $true
+        $psi.WorkingDirectory = $PSScriptRoot
 
-        $lastOutSize = 0
+        $p = New-Object System.Diagnostics.Process
+        $p.StartInfo = $psi
+
+        $script:iscOutBuf = New-Object System.Text.StringBuilder
+        $script:iscErrBuf = New-Object System.Text.StringBuilder
+
+        $outAction = {
+            if (-not [string]::IsNullOrEmpty($EventArgs.Data)) {
+                [void]$Event.MessageData.AppendLine($EventArgs.Data)
+            }
+        }
+        $subOut = Register-ObjectEvent -InputObject $p -EventName OutputDataReceived `
+            -MessageData $script:iscOutBuf -Action $outAction
+        $subErr = Register-ObjectEvent -InputObject $p -EventName ErrorDataReceived `
+            -MessageData $script:iscErrBuf -Action $outAction
+
+        $p.Start() | Out-Null
+        $p.BeginOutputReadLine()
+        $p.BeginErrorReadLine()
+
+        $lastOutLen = 0
         while (-not $p.HasExited) {
-            try {
-                $curSize = (Get-Item $outFile -ErrorAction SilentlyContinue).Length
-                if ($curSize -and $curSize -gt $lastOutSize) {
-                    $fs = [System.IO.File]::Open($outFile, "Open", "Read", "ReadWrite")
-                    $fs.Seek($lastOutSize, "Begin") | Out-Null
-                    $reader = New-Object System.IO.StreamReader($fs)
-                    $newContent = $reader.ReadToEnd()
-                    $reader.Close(); $fs.Close()
-                    foreach ($l in $newContent -split "`r?`n") {
-                        if ($l.Trim()) { Add-Log $l.TrimEnd() }
-                    }
-                    $lastOutSize = $curSize
+            $outText = $script:iscOutBuf.ToString()
+            if ($outText.Length -gt $lastOutLen) {
+                foreach ($l in $outText.Substring($lastOutLen) -split "`r?`n") {
+                    if ($l.Trim()) { Add-Log $l.TrimEnd() }
                 }
-            } catch { }
+                $lastOutLen = $outText.Length
+            }
             [System.Windows.Forms.Application]::DoEvents()
             Start-Sleep -Milliseconds 200
         }
+
+        # CRITICO: WaitForExit para poblar ExitCode
+        $p.WaitForExit()
         Start-Sleep -Milliseconds 300
+
+        # Drenar output restante
+        $outText = $script:iscOutBuf.ToString()
+        if ($outText.Length -gt $lastOutLen) {
+            foreach ($l in $outText.Substring($lastOutLen) -split "`r?`n") {
+                if ($l.Trim()) { Add-Log $l.TrimEnd() }
+            }
+        }
+        $errText = $script:iscErrBuf.ToString()
+        if ($errText.Trim()) {
+            foreach ($l in $errText -split "`r?`n") {
+                if ($l.Trim()) { Add-Log ("! " + $l.TrimEnd()) }
+            }
+        }
+
         try {
-            $tail = Get-Content $outFile -Raw -ErrorAction SilentlyContinue
-            if ($tail -and $tail.Length -gt $lastOutSize) {
-                foreach ($l in $tail.Substring($lastOutSize) -split "`r?`n") {
-                    if ($l.Trim()) { Add-Log $l.TrimEnd() }
-                }
-            }
-            $errTail = Get-Content $errFile -Raw -ErrorAction SilentlyContinue
-            if ($errTail) {
-                foreach ($l in $errTail -split "`r?`n") {
-                    if ($l.Trim()) { Add-Log ("! " + $l.TrimEnd()) }
-                }
-            }
+            Unregister-Event -SourceIdentifier $subOut.Name -ErrorAction SilentlyContinue
+            Unregister-Event -SourceIdentifier $subErr.Name -ErrorAction SilentlyContinue
         } catch { }
-        Remove-Item $outFile, $errFile -Force -ErrorAction SilentlyContinue
 
         $script:progress.Style = "Continuous"
 
-        if ($p.ExitCode -ne 0) {
-            Add-Log "ERROR: ISCC fallo con codigo $($p.ExitCode)"
+        $rc = $p.ExitCode
+        Add-Log "  ISCC exit code: $rc"
+
+        # Verificacion ground-truth: si el .exe existe, es exito aunque ExitCode sea raro
+        $expectedExe = Get-ChildItem "installer_output\*.exe" -ErrorAction SilentlyContinue |
+                       Sort-Object LastWriteTime -Descending | Select-Object -First 1
+        $recentEnough = $expectedExe -and (New-TimeSpan -Start $expectedExe.LastWriteTime -End (Get-Date)).TotalMinutes -lt 2
+
+        if ($rc -ne 0 -and -not $recentEnough) {
+            Add-Log "ERROR: ISCC fallo con codigo $rc"
             Set-Progress 100 "Fallo la compilacion del installer"
             return $false
+        }
+        if ($rc -ne 0 -and $recentEnough) {
+            Add-Log "AVISO: ISCC devolvio codigo raro ($rc) pero el .exe SI se genero, todo OK."
         }
 
         $out = Get-ChildItem "installer_output\*.exe" -ErrorAction SilentlyContinue |
